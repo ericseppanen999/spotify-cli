@@ -952,7 +952,10 @@ async fn execute(
         }
         Command::NewPlaylist(name) => {
             api.create_playlist(&name, "").await?;
-            emit(tx, Update::Message(format!("Created playlist {name}"), false));
+            emit(
+                tx,
+                Update::Message(format!("Created playlist {name}"), false),
+            );
             emit(tx, Update::Playlists(api.playlists().await?));
         }
         Command::Load(id, name) => {

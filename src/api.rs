@@ -382,9 +382,20 @@ impl Api {
     }
     /// Downloads and downsamples album art to a fixed-size RGB grid for terminal rendering.
     pub async fn cover_art(&self, url: &str) -> Result<CoverPixels> {
-        let bytes = self.http.get(url).send().await?.error_for_status()?.bytes().await?;
+        let bytes = self
+            .http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
         let image = image::load_from_memory(&bytes)?
-            .resize_exact(COVER_SIZE, COVER_SIZE, image::imageops::FilterType::Triangle)
+            .resize_exact(
+                COVER_SIZE,
+                COVER_SIZE,
+                image::imageops::FilterType::Triangle,
+            )
             .to_rgb8();
         Ok((0..COVER_SIZE)
             .map(|y| {
