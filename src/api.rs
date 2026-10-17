@@ -14,11 +14,27 @@ pub struct Artist {
     pub uri: String,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Image {
+    pub url: String,
+    pub width: Option<u32>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Album {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub uri: String,
+    #[serde(default)]
+    pub images: Vec<Image>,
+}
+impl Album {
+    /// The smallest available artwork, since listening-mode art is downsampled anyway.
+    pub fn thumbnail(&self) -> Option<&str> {
+        self.images
+            .iter()
+            .min_by_key(|i| i.width.unwrap_or(u32::MAX))
+            .map(|i| i.url.as_str())
+    }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Track {
@@ -82,6 +98,9 @@ struct TrackItem {
     #[serde(alias = "track")]
     item: Option<Track>,
 }
+
+pub type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
+const COVER_SIZE: u32 = 32;
 
 pub struct Api {
     pub auth: Auth,
@@ -269,13 +288,38 @@ impl Api {
         .await
     }
     pub async fn search_tracks(&mut self, query: &str) -> Result<Vec<Track>> {
-        let result = self.search(query, "track", 0).await?;
-        Ok(serde_json::from_value(
-            result
-                .pointer("/tracks/items")
-                .cloned()
-                .unwrap_or(json!([])),
-        )?)
+        self.search_results(query, "track", 0, 50)
+            .await?
+            .into_iter()
+            .map(|item| Ok(serde_json::from_value(item)?))
+            .collect()
+    }
+    pub async fn search_results(
+        &mut self,
+        query: &str,
+        kind: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        anyhow::ensure!((1..=100).contains(&limit), "Search limit must be 1–100");
+        let mut items = Vec::new();
+        let mut offset = offset;
+        while items.len() < limit {
+            let result = self.search(query, kind, offset).await?;
+            let page = &result[format!("{kind}s")];
+            let batch = page["items"]
+                .as_array()
+                .context("Spotify search response is missing items")?;
+            if batch.is_empty() {
+                break;
+            }
+            offset += batch.len();
+            items.extend(batch.iter().take(limit - items.len()).cloned());
+            if page["next"].as_str().is_none() {
+                break;
+            }
+        }
+        Ok(items)
     }
     pub async fn recent(&mut self) -> Result<Vec<Track>> {
         let page: Page<TrackItem> = self
@@ -336,11 +380,28 @@ impl Api {
         .await?;
         Ok(())
     }
+    /// Downloads and downsamples album art to a fixed-size RGB grid for terminal rendering.
+    pub async fn cover_art(&self, url: &str) -> Result<CoverPixels> {
+        let bytes = self.http.get(url).send().await?.error_for_status()?.bytes().await?;
+        let image = image::load_from_memory(&bytes)?
+            .resize_exact(COVER_SIZE, COVER_SIZE, image::imageops::FilterType::Triangle)
+            .to_rgb8();
+        Ok((0..COVER_SIZE)
+            .map(|y| {
+                (0..COVER_SIZE)
+                    .map(|x| {
+                        let p = image.get_pixel(x, y);
+                        (p[0], p[1], p[2])
+                    })
+                    .collect()
+            })
+            .collect())
+    }
     pub async fn like(&mut self, track: &str) -> Result<()> {
         self.request(
             Method::PUT,
-            "/me/library",
-            &[("uris", &track_uri(track)?)],
+            "/me/tracks",
+            &[("ids", &spotify_id(track, "track")?)],
             None,
         )
         .await?;
@@ -520,8 +581,8 @@ mod tests {
         let mut a = api(&s, d.path());
         let uri = format!("spotify:track:{ID}");
         Mock::given(method("PUT"))
-            .and(path("/me/library"))
-            .and(query_param("uris", &uri))
+            .and(path("/me/tracks"))
+            .and(query_param("ids", ID))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&s)
@@ -598,5 +659,121 @@ mod tests {
         );
         assert!(spotify_id("../../me", "playlist").is_err());
         assert!(spotify_id(&format!("spotify:album:{ID}"), "track").is_err());
+    }
+
+    #[tokio::test]
+    async fn track_search_fetches_five_pages_in_order() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        for offset in [0, 10, 20, 30, 40] {
+            let items: Vec<_> = (offset..offset + 10)
+                .map(|i| json!({"name":format!("Track {i}")}))
+                .collect();
+            Mock::given(path("/search"))
+                .and(query_param("type", "track"))
+                .and(query_param("limit", "10"))
+                .and(query_param("offset", offset.to_string()))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"tracks":{"items":items,"next":"another page"}})),
+                )
+                .expect(1)
+                .mount(&s)
+                .await;
+        }
+        let tracks = a.search_tracks("test").await.unwrap();
+        assert_eq!(tracks.len(), 50);
+        assert_eq!(tracks[10].name, "Track 10");
+        assert_eq!(tracks[49].name, "Track 49");
+    }
+
+    #[tokio::test]
+    async fn add_playing_song_to_weekly_playlist_without_enabling_mode() {
+        use crate::{config::Config, newmusic};
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        let uri = format!("spotify:track:{ID}");
+        Mock::given(method("GET"))
+            .and(path("/me/player"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"is_playing":true,"item":{"uri":uri}})),
+            )
+            .expect(1)
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/playlists/{ID}/items")))
+            .and(body_json(json!({"uris":[uri]})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"snapshot_id":"one"})))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let mut config = Config::default();
+        config
+            .weeks
+            .insert(newmusic::release_day(Utc::now()).to_string(), ID.into());
+        newmusic::add_current(&mut a, &mut config, d.path())
+            .await
+            .unwrap();
+        assert!(!config.newmusic);
+    }
+
+    #[tokio::test]
+    async fn adding_current_with_no_playback_does_not_create_a_playlist() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(path("/me/player"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        Mock::given(path("/me/playlists"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&s)
+            .await;
+        assert!(crate::newmusic::add_current(
+            &mut a,
+            &mut crate::config::Config::default(),
+            d.path()
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Nothing is currently playing"));
+    }
+
+    #[tokio::test]
+    async fn search_respects_offset_limit_and_end_of_results() {
+        for kind in ["album", "artist"] {
+            let s = MockServer::start().await;
+            let d = tempfile::tempdir().unwrap();
+            let mut a = api(&s, d.path());
+            for (offset, count, next) in [(20, 10, Some("next")), (30, 3, None)] {
+                let items: Vec<_> = (offset..offset + count)
+                    .map(|i| json!({"name":format!("Item {i}")}))
+                    .collect();
+                Mock::given(path("/search"))
+                    .and(query_param("type", kind))
+                    .and(query_param("offset", offset.to_string()))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({format!("{kind}s"):{"items":items,"next":next}})),
+                    )
+                    .mount(&s)
+                    .await;
+            }
+            let items = a.search_results("test", kind, 20, 50).await.unwrap();
+            assert_eq!(items.len(), 13);
+            assert_eq!(items[0]["name"], "Item 20");
+            assert_eq!(
+                a.search_results("test", kind, 20, 11).await.unwrap().len(),
+                11
+            );
+        }
     }
 }

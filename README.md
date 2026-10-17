@@ -46,7 +46,8 @@ spot prev
 spot volume 50
 spot search "Massive Attack"
 spot search "Mezzanine" --kind album
-spot search "Massive Attack" --kind artist --offset 10
+spot search "Massive Attack" --kind artist --limit 100
+spot search "Massive Attack" --offset 50
 spot recent
 spot playlists
 spot playlists PLAYLIST_ID
@@ -62,27 +63,30 @@ spot add TRACK_ID           # this week's diary playlist
 spot newmusic off
 ```
 
-Replace the uppercase example IDs with Spotify's 22-character IDs. Track/playlist arguments also accept Spotify URIs and `https://open.spotify.com/...` share links. Quote links containing query parameters. Search returns at most ten results per request; use `--offset` for subsequent pages. Playlist lists and contents paginate automatically.
+Replace the uppercase example IDs with Spotify's 22-character IDs. Track/playlist arguments also accept Spotify URIs and `https://open.spotify.com/...` share links. Quote links containing query parameters. CLI and TUI searches fetch up to 50 results automatically, using pages of ten. The CLI also supports `--limit 1..100` and `--offset` to choose how many results to fetch and where to start. Searches stop early when Spotify has no more results. Playlist lists and contents paginate automatically.
 
 ## Terminal interface
 
-The left panel lists playlists; Enter opens one. Tab changes focus. The right panel shows tracks or search results. The playback bar shows the active device and interpolated progress, refreshed from Spotify every five seconds. Requests run in a background worker; errors appear in the footer.
+The left sidebar has **Pins** above **Playlists**. Select a song or playlist and press **Shift+P** to pin it; press the same key to unpin it. Pins are saved locally and survive restarts. Tab cycles through Pins, Playlists, and Tracks; Enter plays a pinned song or opens a pinned playlist. The right panel shows tracks or search results. The playback bar shows the active device and interpolated progress, refreshed from Spotify every five seconds. Requests run in a background worker; errors appear in the footer.
 
 | Key | Action |
 | --- | --- |
 | Space | Play/pause |
 | n / p | Next/previous |
+| Shift+P | Pin/unpin selected song or playlist |
 | j / k or arrows | Move selection |
 | Enter | Open playlist / play selected track |
 | Tab | Switch panel |
 | / | Search tracks |
 | Ctrl+P | Fuzzy picker for playlists and currently loaded tracks |
 | a | Choose a destination playlist, or add to this week's diary |
+| m | Add the currently playing song to this week's New Music playlist |
 | l | Like selected track (current track if no selection) |
 | d | Device picker |
 | + / - | Volume |
 | N | Toggle new music mode |
 | r | Recently played |
+| z | Listening mode (also enters automatically after 60 seconds idle) |
 | x | Remove track from viewed playlist; type `yes` to confirm |
 | ? | Help |
 | Esc | Close popup |
@@ -90,11 +94,15 @@ The left panel lists playlists; Enter opens one. Tab changes focus. The right pa
 
 Type to filter pickers; use arrows and Enter to select. Removing a track removes all occurrences of that URI from the playlist. Spotify permits editing only playlists you own or collaborate on. In current Development Mode, reading playlist contents is also limited to those playlists.
 
+After 60 seconds without keyboard input, listening mode displays a centered title, artist, and live progress bar. Any key returns to your previous view; that first key only wakes the interface, so it won't skip a track, pause, or quit. Playback continues updating while this view is shown. Press `z` to enter it immediately.
+
 ## Weekly music diary
 
 New music mode routes additions without an explicit destination to a private playlist named `New Music, week of Oct 16`. Weeks start Thursday at **9 pm America/Los_Angeles** and use the following Friday's release date. Daylight saving time is handled by the timezone database. The date-to-playlist mapping includes the year. Newly created diary playlists include a dated description so they can be rediscovered if the local mapping is lost.
 
 This feature records songs you choose. Spotify's Development Mode does not provide the new releases endpoint. Explicit playlist arguments always take precedence over diary routing.
+
+Press `m` in the TUI to save the currently playing song directly to this week's playlist. This reads fresh playback state and works even when New Music mode is off; it doesn't change that setting. The `a` key continues to act on the selected song.
 
 ## Configuration
 

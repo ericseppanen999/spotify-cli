@@ -42,6 +42,9 @@ enum Command {
         kind: Kind,
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        /// Total results to fetch across Spotify's pages
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u8).range(1..=100))]
+        limit: u8,
     },
     Recent,
     /// List playlists, or the tracks in a playlist
@@ -198,24 +201,22 @@ async fn run() -> Result<()> {
             query,
             kind,
             offset,
+            limit,
         } => {
             let kind = match kind {
                 Kind::Track => "track",
                 Kind::Album => "album",
                 Kind::Artist => "artist",
             };
-            let result = api.search(&query, kind, offset).await?;
-            if let Some(items) = result
-                .pointer(&format!("/{kind}s/items"))
-                .and_then(|v| v.as_array())
-            {
-                for item in items {
-                    println!(
-                        "{}  {}",
-                        item["uri"].as_str().unwrap_or(""),
-                        item["name"].as_str().unwrap_or("")
-                    );
-                }
+            let items = api
+                .search_results(&query, kind, offset, usize::from(limit))
+                .await?;
+            for item in items {
+                println!(
+                    "{}  {}",
+                    item["uri"].as_str().unwrap_or(""),
+                    item["name"].as_str().unwrap_or("")
+                );
             }
         }
         Command::Recent => print_tracks(api.recent().await?),

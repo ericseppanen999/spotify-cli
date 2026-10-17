@@ -1,5 +1,5 @@
 use crate::{api::Api, config::Config};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use chrono_tz::America::Los_Angeles;
 use std::path::Path;
@@ -16,6 +16,16 @@ pub fn release_day(now: DateTime<Utc>) -> NaiveDate {
 }
 pub fn playlist_name(day: NaiveDate) -> String {
     format!("New Music, week of {}", day.format("%b %-d"))
+}
+pub async fn add_current(api: &mut Api, config: &mut Config, dir: &Path) -> Result<()> {
+    let track = api
+        .playback()
+        .await?
+        .item
+        .context("Nothing is currently playing")?;
+    let uri = crate::api::track_uri(&track.uri)?;
+    let playlist = ensure(api, config, dir).await?;
+    api.add(&uri, &playlist).await
 }
 pub async fn ensure(api: &mut Api, config: &mut Config, dir: &Path) -> Result<String> {
     let day = release_day(Utc::now());
