@@ -532,7 +532,6 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     let rows = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(4),
-        Constraint::Length(4),
         Constraint::Length(1),
     ])
     .split(frame.area());
@@ -552,8 +551,12 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         ])),
         rows[0],
     );
-    let panels =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)]).split(rows[1]);
+    let panels = Layout::horizontal([
+        Constraint::Percentage(15),
+        Constraint::Percentage(55),
+        Constraint::Percentage(30),
+    ])
+    .split(rows[1]);
     let border = |title: String, focused: bool| {
         Block::default()
             .borders(Borders::ALL)
@@ -620,49 +623,105 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     .highlight_style(Style::default().bg(highlight))
     .highlight_symbol("› ");
     frame.render_stateful_widget(tracks, panels[1], &mut ui.track_state);
-    let now = ui
-        .playback
-        .item
-        .as_ref()
-        .map(|t| t.label())
-        .unwrap_or_else(|| {
-            "Nothing playing — open Spotify on a device; press d to choose it".into()
-        });
+    let track = ui.playback.item.as_ref();
+    let now_title = track.map(|t| t.name.as_str()).unwrap_or("Nothing playing");
+    let now_artist = track
+        .map(|t| {
+            t.artists
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+        .unwrap_or_else(|| "Open Spotify on a device, then press d".into());
     let device = ui
         .playback
         .device
         .as_ref()
         .map(|d| d.name.as_str())
         .unwrap_or("No device");
-    let playback = Block::default()
+    let player = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
-        .title(format!(
-            " {} · {} ",
+        .title(" Now Playing ");
+    let inner = player.inner(panels[2]);
+    frame.render_widget(player, panels[2]);
+    let text_rows = 6u16;
+    let art_width = ui.cover.as_ref().map(|_| inner.width).unwrap_or(0);
+    let art_height = ui
+        .cover
+        .as_ref()
+        .map(|_| (art_width / 2).min(inner.height.saturating_sub(text_rows)))
+        .unwrap_or(0);
+    let mut player_constraints = Vec::new();
+    if art_height > 0 {
+        player_constraints.push(Constraint::Length(art_height));
+    }
+    player_constraints.extend([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ]);
+    let player_rows = Layout::vertical(player_constraints).split(inner);
+    let art_offset = if art_height > 0 { 1 } else { 0 };
+    if let Some(cover) = ui.cover.as_ref().filter(|_| art_height > 0) {
+        render_cover(frame, player_rows[0], cover);
+    }
+    let player_rows = &player_rows[art_offset..];
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}  {}",
+            if ui.playback.is_playing { "▶" } else { "⏸" },
             if ui.playback.is_playing {
                 "Playing"
             } else {
                 "Paused"
-            },
-            device
-        ));
-    let inner = playback.inner(rows[2]);
-    frame.render_widget(playback, rows[2]);
-    let now_rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-    frame.render_widget(Paragraph::new(now), now_rows[0]);
+            }
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        player_rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(now_title)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        player_rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(now_artist)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(dim)),
+        player_rows[2],
+    );
     let (position, duration, ratio) = progress(ui);
     frame.render_widget(
         Gauge::default()
             .ratio(ratio)
             .gauge_style(Style::default().fg(accent))
-            .label(format!(
-                "{}:{:02} / {}:{:02}",
-                position / 60000,
-                position / 1000 % 60,
-                duration / 60000,
-                duration / 1000 % 60
-            )),
-        now_rows[1],
+            .label(""),
+        player_rows[3],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}:{:02} / {}:{:02}",
+            position / 60000,
+            position / 1000 % 60,
+            duration / 60000,
+            duration / 1000 % 60
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(dim)),
+        player_rows[4],
+    );
+    frame.render_widget(
+        Paragraph::new(device)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(dim)),
+        player_rows[5],
     );
     let footer = if ui.message_at.elapsed() < Duration::from_secs(8) {
         ui.message.as_str()
@@ -677,7 +736,7 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
                 dim
             },
         )),
-        rows[3],
+        rows[2],
     );
     if let Some(popup) = &ui.popup {
         let area = centered(frame.area());
@@ -1235,6 +1294,22 @@ pub fn preview() -> Result<ratatui::buffer::Buffer> {
         }),
     };
     ui.notice("Added to New Music, week of Oct 16".into(), false);
+    ui.cover = Some(
+        (0..8)
+            .map(|y| {
+                (0..8)
+                    .map(|x| {
+                        let t = (x + y) as f32 / 14.0;
+                        (
+                            (20.0 + t * 40.0) as u8,
+                            (90.0 + t * 90.0) as u8,
+                            (110.0 - t * 60.0) as u8,
+                        )
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 23))?;
     terminal.draw(|frame| draw(frame, &mut ui))?;
     Ok(terminal.backend().buffer().clone())

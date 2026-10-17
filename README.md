@@ -67,7 +67,7 @@ Replace the uppercase example IDs with Spotify's 22-character IDs. Track/playlis
 
 ## Terminal interface
 
-The left sidebar has **Pins** above **Playlists**. Select a song or playlist and press **Shift+P** to pin it; press the same key to unpin it. Pins are saved locally and survive restarts. Tab cycles through Pins, Playlists, and Tracks; Enter plays a pinned song or opens a pinned playlist. The right panel shows tracks or search results. The playback bar shows the active device and interpolated progress, refreshed from Spotify every five seconds. Requests run in a background worker; errors appear in the footer.
+The left sidebar has **Pins** above **Playlists**. Select a song or playlist and press **Shift+P** to pin it; press the same key to unpin it. Pins are saved locally and survive restarts. Tab cycles through Pins, Playlists, and Tracks; Enter plays a pinned song or opens a pinned playlist. The middle panel shows tracks or search results. The **Now Playing** panel on the far right shows album art, a play/pause indicator, the active device, and interpolated progress, refreshed from Spotify every five seconds. Requests run in a background worker; errors appear in the footer.
 
 | Key | Action |
 | --- | --- |
