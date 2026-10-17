@@ -886,31 +886,61 @@ fn draw_listening(frame: &mut Frame, ui: &Ui) {
         rows[6],
     );
 }
-/// Renders an RGB pixel grid as half-block characters, doubling vertical resolution
-/// by pairing each cell's foreground/background color with one pixel each.
+/// Unicode quadrant-block glyphs, indexed by a 4-bit (TL,TR,BL,BR) "filled" mask,
+/// so each terminal cell can show a 2x2 sub-grid of pixels instead of just one color.
+const QUADRANTS: [char; 16] = [
+    ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
+];
+/// Renders an RGB pixel grid as quadrant-block characters: each cell samples a 2x2
+/// block of source pixels, splits them into a foreground/background pair by
+/// brightness, and picks the glyph whose filled quadrants match that split.
 fn render_cover(frame: &mut Frame, area: Rect, cover: &CoverPixels) {
-    let size = cover.len() as u32;
-    if size == 0 || area.width == 0 || area.height == 0 {
+    let height = cover.len() as u32;
+    let width = cover.first().map(|r| r.len()).unwrap_or(0) as u32;
+    if width == 0 || height == 0 || area.width == 0 || area.height == 0 {
         return;
     }
-    let pixel_width = area.width as u32;
+    let pixel_width = area.width as u32 * 2;
     let pixel_height = area.height as u32 * 2;
     let sample = |x: u32, y: u32| {
-        let sx = (x * size / pixel_width).min(size - 1) as usize;
-        let sy = (y * size / pixel_height).min(size - 1) as usize;
+        let sx = (x * width / pixel_width).min(width - 1) as usize;
+        let sy = (y * height / pixel_height).min(height - 1) as usize;
         cover[sy][sx]
+    };
+    let luma = |(r, g, b): (u8, u8, u8)| 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+    let avg = |pixels: &[(u8, u8, u8)]| {
+        let n = pixels.len().max(1) as u32;
+        let (r, g, b) = pixels.iter().fold((0u32, 0u32, 0u32), |(r, g, b), p| {
+            (r + p.0 as u32, g + p.1 as u32, b + p.2 as u32)
+        });
+        Color::Rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
     };
     let lines: Vec<Line> = (0..area.height as u32)
         .map(|row| {
-            let spans: Vec<Span> = (0..pixel_width)
+            let spans: Vec<Span> = (0..area.width as u32)
                 .map(|col| {
-                    let (tr, tg, tb) = sample(col, row * 2);
-                    let (br, bg, bb) = sample(col, row * 2 + 1);
+                    let quad = [
+                        sample(col * 2, row * 2),
+                        sample(col * 2 + 1, row * 2),
+                        sample(col * 2, row * 2 + 1),
+                        sample(col * 2 + 1, row * 2 + 1),
+                    ];
+                    let threshold = quad.iter().copied().map(luma).sum::<f64>() / 4.0;
+                    let mut mask = 0usize;
+                    let (mut fg, mut bg) = (Vec::new(), Vec::new());
+                    for (i, &p) in quad.iter().enumerate() {
+                        if luma(p) >= threshold {
+                            mask |= 1 << (3 - i);
+                            fg.push(p);
+                        } else {
+                            bg.push(p);
+                        }
+                    }
+                    let fg_color = avg(if fg.is_empty() { &quad } else { &fg });
+                    let bg_color = avg(if bg.is_empty() { &quad } else { &bg });
                     Span::styled(
-                        "▀",
-                        Style::default()
-                            .fg(Color::Rgb(tr, tg, tb))
-                            .bg(Color::Rgb(br, bg, bb)),
+                        QUADRANTS[mask].to_string(),
+                        Style::default().fg(fg_color).bg(bg_color),
                     )
                 })
                 .collect();

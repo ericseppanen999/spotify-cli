@@ -100,7 +100,7 @@ struct TrackItem {
 }
 
 pub type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
-const COVER_SIZE: u32 = 48;
+const COVER_MAX_SIZE: u32 = 128;
 
 pub struct Api {
     pub auth: Auth,
@@ -380,7 +380,8 @@ impl Api {
         .await?;
         Ok(())
     }
-    /// Downloads and downsamples album art to a fixed-size RGB grid for terminal rendering.
+    /// Downloads album art, keeping its native resolution (the terminal renderer samples
+    /// from this directly) so detail isn't lost to an early fixed-size downsample.
     pub async fn cover_art(&self, url: &str) -> Result<CoverPixels> {
         let bytes = self
             .http
@@ -390,16 +391,19 @@ impl Api {
             .error_for_status()?
             .bytes()
             .await?;
-        let image = image::load_from_memory(&bytes)?
-            .resize_exact(
-                COVER_SIZE,
-                COVER_SIZE,
+        let mut decoded = image::load_from_memory(&bytes)?;
+        if decoded.width() > COVER_MAX_SIZE || decoded.height() > COVER_MAX_SIZE {
+            decoded = decoded.resize(
+                COVER_MAX_SIZE,
+                COVER_MAX_SIZE,
                 image::imageops::FilterType::Triangle,
-            )
-            .to_rgb8();
-        Ok((0..COVER_SIZE)
+            );
+        }
+        let image = decoded.to_rgb8();
+        let (width, height) = image.dimensions();
+        Ok((0..height)
             .map(|y| {
-                (0..COVER_SIZE)
+                (0..width)
                     .map(|x| {
                         let p = image.get_pixel(x, y);
                         (p[0], p[1], p[2])
