@@ -1,0 +1,18 @@
+client_id = "YOUR_SPOTIFY_CLIENT_ID"
+newmusic = false
+
+[theme]
+accent = "#1DB954"
+dim = "#89919b"
+highlight = "#253d30"
+error = "#ff6b6b"
+
+# Map keys to action names. Overrides take priority over defaults.
+# Actions: toggle, next, previous, down, up, play, focus, search, picker,
+# add, like, devices, louder, quieter, newmusic, remove, recent, help, quit.
+[keys]
+# "s" = "search"
+# "ctrl+j" = "down"
+
+# Managed automatically; keys include the year to avoid collisions.
+[weeks]
