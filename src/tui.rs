@@ -773,8 +773,8 @@ fn progress(ui: &Ui) -> (u64, u64, f64) {
 fn draw_listening(frame: &mut Frame, ui: &Ui) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(80);
-    let text_height = 12;
-    let art_width = ui.cover.as_ref().map(|_| width.min(28)).unwrap_or(0);
+    let text_height = 13;
+    let art_width = ui.cover.as_ref().map(|_| width.min(40)).unwrap_or(0);
     let art_height = art_width / 2;
     let height = (art_height + text_height).min(area.height);
     let center = Rect::new(
@@ -792,6 +792,7 @@ fn draw_listening(frame: &mut Frame, ui: &Ui) {
         Constraint::Length(3),
         Constraint::Length(2),
         Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(2),
     ]);
@@ -844,14 +845,20 @@ fn draw_listening(frame: &mut Frame, ui: &Ui) {
         Gauge::default()
             .ratio(ratio)
             .gauge_style(Style::default().fg(accent))
-            .label(format!(
-                "{}:{:02} / {}:{:02}",
-                position / 60000,
-                position / 1000 % 60,
-                duration / 60000,
-                duration / 1000 % 60
-            )),
+            .label(""),
         rows[3],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}:{:02} / {}:{:02}",
+            position / 60000,
+            position / 1000 % 60,
+            duration / 60000,
+            duration / 1000 % 60
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(dim)),
+        rows[4],
     );
     let status = format!(
         "{} · {}",
@@ -870,13 +877,13 @@ fn draw_listening(frame: &mut Frame, ui: &Ui) {
         Paragraph::new(status)
             .alignment(Alignment::Center)
             .style(Style::default().fg(dim)),
-        rows[4],
+        rows[5],
     );
     frame.render_widget(
         Paragraph::new("Press any key to return")
             .alignment(Alignment::Center)
             .style(Style::default().fg(dim)),
-        rows[5],
+        rows[6],
     );
 }
 /// Renders an RGB pixel grid as half-block characters, doubling vertical resolution

@@ -100,7 +100,7 @@ struct TrackItem {
 }
 
 pub type CoverPixels = Vec<Vec<(u8, u8, u8)>>;
-const COVER_SIZE: u32 = 32;
+const COVER_SIZE: u32 = 48;
 
 pub struct Api {
     pub auth: Auth,
