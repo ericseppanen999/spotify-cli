@@ -73,6 +73,8 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | --- | --- |
 | Space | Play/pause |
 | n / p | Next/previous |
+| s | Toggle shuffle |
+| Shift+R | Cycle repeat mode (off / all / one) |
 | Shift+P | Pin/unpin selected song or playlist |
 | j / k or arrows | Move selection |
 | Enter | Open playlist / play selected track |
@@ -81,8 +83,10 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | Ctrl+P | Fuzzy picker for playlists and currently loaded tracks |
 | a | Choose a destination playlist, or add to this week's diary |
 | m | Add the currently playing song to this week's New Music playlist |
+| c | Create a new playlist |
 | l | Like selected track (current track if no selection) |
 | d | Device picker |
+| t | Choose a color theme |
 | + / - | Volume |
 | N | Toggle new music mode |
 | r | Recently played |

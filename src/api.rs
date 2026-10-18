@@ -84,6 +84,10 @@ pub struct Device {
 pub struct Playback {
     #[serde(default)]
     pub is_playing: bool,
+    #[serde(default)]
+    pub shuffle_state: bool,
+    #[serde(default)]
+    pub repeat_state: String,
     pub progress_ms: Option<u64>,
     pub item: Option<Track>,
     pub device: Option<Device>,
@@ -271,6 +275,22 @@ impl Api {
             None,
         )
         .await?;
+        Ok(())
+    }
+    pub async fn shuffle(&mut self, on: bool) -> Result<()> {
+        self.request(
+            Method::PUT,
+            "/me/player/shuffle",
+            &[("state", if on { "true" } else { "false" })],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+    /// `mode` is one of Spotify's repeat states: "off", "context", or "track".
+    pub async fn repeat(&mut self, mode: &str) -> Result<()> {
+        self.request(Method::PUT, "/me/player/repeat", &[("state", mode)], None)
+            .await?;
         Ok(())
     }
     pub async fn search(&mut self, query: &str, kind: &str, offset: usize) -> Result<Value> {

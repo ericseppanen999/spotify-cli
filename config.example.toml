@@ -9,7 +9,7 @@ error = "#ff6b6b"
 
 # Map keys to action names. Overrides take priority over defaults.
 # Actions: toggle, next, previous, down, up, play, focus, search, picker,
-# add, add_current, like, devices, theme, create, louder, quieter, newmusic, pin, remove, recent, listening, help, quit.
+# add, add_current, like, devices, theme, create, louder, quieter, newmusic, shuffle, repeat, pin, remove, recent, listening, help, quit.
 [keys]
 # "s" = "search"
 # "ctrl+j" = "down"

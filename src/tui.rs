@@ -43,6 +43,8 @@ const BINDINGS: &[(&str, &str, &str)] = &[
     ("+", "louder", "Volume up"),
     ("-", "quieter", "Volume down"),
     ("N", "newmusic", "Toggle new music mode"),
+    ("s", "shuffle", "Toggle shuffle"),
+    ("R", "repeat", "Cycle repeat mode (off / all / one)"),
     ("x", "remove", "Remove selected track"),
     ("r", "recent", "Recently played"),
     ("z", "listening", "Listening mode (also after 60s idle)"),
@@ -69,6 +71,8 @@ enum Command {
     Pin(Pin),
     Theme(Theme),
     NewPlaylist(String),
+    Shuffle(bool),
+    Repeat(String),
 }
 enum Update {
     Busy(bool),
@@ -464,6 +468,15 @@ impl Ui {
             }
             "louder" => Some(Command::Volume(5)),
             "quieter" => Some(Command::Volume(-5)),
+            "shuffle" => Some(Command::Shuffle(!self.playback.shuffle_state)),
+            "repeat" => {
+                let next = match self.playback.repeat_state.as_str() {
+                    "off" => "context",
+                    "context" => "track",
+                    _ => "off",
+                };
+                Some(Command::Repeat(next.to_string()))
+            }
             "newmusic" => Some(Command::Newmusic),
             "recent" => Some(Command::Recent),
             _ => None,
@@ -646,7 +659,7 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         .title(" Now Playing ");
     let inner = player.inner(panels[2]);
     frame.render_widget(player, panels[2]);
-    let text_rows = 6u16;
+    let text_rows = 9u16;
     let art_width = ui.cover.as_ref().map(|_| inner.width).unwrap_or(0);
     let art_height = ui
         .cover
@@ -660,6 +673,8 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     player_constraints.extend([
         Constraint::Length(1),
         Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -697,13 +712,43 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
             .style(Style::default().fg(dim)),
         player_rows[2],
     );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "⏮   {}   ⏭",
+            if ui.playback.is_playing { "⏸" } else { "▶" }
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(accent)),
+        player_rows[3],
+    );
+    let shuffle_style = Style::default().fg(if ui.playback.shuffle_state {
+        accent
+    } else {
+        dim
+    });
+    let repeating = matches!(ui.playback.repeat_state.as_str(), "context" | "track");
+    let repeat_style = Style::default().fg(if repeating { accent } else { dim });
+    let repeat_icon = if ui.playback.repeat_state == "track" {
+        "🔂"
+    } else {
+        "🔁"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("🔀 shuffle", shuffle_style),
+            Span::raw("   "),
+            Span::styled(format!("{repeat_icon} repeat"), repeat_style),
+        ]))
+        .alignment(Alignment::Center),
+        player_rows[4],
+    );
     let (position, duration, ratio) = progress(ui);
     frame.render_widget(
         Gauge::default()
             .ratio(ratio)
             .gauge_style(Style::default().fg(accent))
             .label(""),
-        player_rows[3],
+        player_rows[5],
     );
     frame.render_widget(
         Paragraph::new(format!(
@@ -715,13 +760,13 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         ))
         .alignment(Alignment::Center)
         .style(Style::default().fg(dim)),
-        player_rows[4],
+        player_rows[6],
     );
     frame.render_widget(
         Paragraph::new(device)
             .alignment(Alignment::Center)
             .style(Style::default().fg(dim)),
-        player_rows[5],
+        player_rows[7],
     );
     let footer = if ui.message_at.elapsed() < Duration::from_secs(8) {
         ui.message.as_str()
@@ -1089,6 +1134,8 @@ async fn execute(
             api.volume((i16::from(current) + delta).clamp(0, 100) as u8)
                 .await?;
         }
+        Command::Shuffle(on) => api.shuffle(on).await?,
+        Command::Repeat(mode) => api.repeat(&mode).await?,
         Command::Like(uri) => {
             api.like(&uri).await?;
             emit(tx, Update::Message("Saved to your library".into(), false));
@@ -1288,6 +1335,8 @@ pub fn preview() -> Result<ratatui::buffer::Buffer> {
         item: Some(ui.tracks[1].clone()),
         progress_ms: Some(73000),
         is_playing: true,
+        shuffle_state: true,
+        repeat_state: "context".into(),
         device: Some(Device {
             name: "Living room".into(),
             ..Default::default()
