@@ -982,12 +982,7 @@ fn draw_listening(frame: &mut Frame, ui: &Ui) {
         rows[4],
     );
     let status = format!(
-        "{} · {}",
-        if ui.playback.is_playing {
-            "Playing"
-        } else {
-            "Paused"
-        },
+        "Listening on: {}",
         ui.playback
             .device
             .as_ref()
