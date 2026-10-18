@@ -689,7 +689,7 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     frame.render_widget(
         Paragraph::new(format!(
             "{}  {}",
-            if ui.playback.is_playing { "▶" } else { "⏸" },
+            if ui.playback.is_playing { ">" } else { "||" },
             if ui.playback.is_playing {
                 "Playing"
             } else {
@@ -714,11 +714,11 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "⏮   {}   ⏭",
-            if ui.playback.is_playing { "⏸" } else { "▶" }
+            "<<   {}   >>",
+            if ui.playback.is_playing { "||" } else { ">" }
         ))
         .alignment(Alignment::Center)
-        .style(Style::default().fg(accent)),
+        .style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
         player_rows[3],
     );
     let shuffle_style = Style::default().fg(if ui.playback.shuffle_state {
@@ -726,18 +726,28 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     } else {
         dim
     });
+    let shuffle_style = if ui.playback.shuffle_state {
+        shuffle_style.add_modifier(Modifier::BOLD)
+    } else {
+        shuffle_style
+    };
     let repeating = matches!(ui.playback.repeat_state.as_str(), "context" | "track");
     let repeat_style = Style::default().fg(if repeating { accent } else { dim });
-    let repeat_icon = if ui.playback.repeat_state == "track" {
-        "🔂"
+    let repeat_style = if repeating {
+        repeat_style.add_modifier(Modifier::BOLD)
     } else {
-        "🔁"
+        repeat_style
+    };
+    let repeat_label = if ui.playback.repeat_state == "track" {
+        "[REPEAT 1]"
+    } else {
+        "[REPEAT]"
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("🔀 shuffle", shuffle_style),
+            Span::styled("[SHUFFLE]", shuffle_style),
             Span::raw("   "),
-            Span::styled(format!("{repeat_icon} repeat"), repeat_style),
+            Span::styled(repeat_label, repeat_style),
         ]))
         .alignment(Alignment::Center),
         player_rows[4],

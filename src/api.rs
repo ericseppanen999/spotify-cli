@@ -147,6 +147,11 @@ impl Api {
                 .query(query);
             if let Some(body) = &body {
                 request = request.json(body);
+            } else if method != Method::GET {
+                // Spotify's gateway returns 411 Length Required for PUT/POST/DELETE
+                // requests with no body unless Content-Length is explicitly set;
+                // reqwest only does that when a body (even an empty one) is attached.
+                request = request.body(Vec::new());
             }
             let response = request.send().await.context("Cannot reach Spotify")?;
             let status = response.status();
