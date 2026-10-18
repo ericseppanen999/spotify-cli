@@ -92,6 +92,7 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | r | Recently played |
 | z | Listening mode (also enters automatically after 60 seconds idle) |
 | x | Remove track from viewed playlist; type `yes` to confirm |
+| w | Launch the local web player (see below) |
 | ? | Help |
 | Esc | Close popup |
 | q / Ctrl+C | Quit |
@@ -99,6 +100,12 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 Type to filter pickers; use arrows and Enter to select. Removing a track removes all occurrences of that URI from the playlist. Spotify permits editing only playlists you own or collaborate on. In current Development Mode, reading playlist contents is also limited to those playlists.
 
 After 60 seconds without keyboard input, listening mode displays a centered title, artist, and live progress bar. Any key returns to your previous view; that first key only wakes the interface, so it won't skip a track, pause, or quit. Playback continues updating while this view is shown. Press `z` to enter it immediately.
+
+## Local web player
+
+By default `spot` is a *remote* — play/pause/next/etc. control whatever device is already active (phone, speaker, the official desktop app). Pressing `w` launches an actual playback device backed by Spotify's official [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk): a tiny loopback-only HTTP server (`127.0.0.1`, random port) serves a minimal page that registers a Connect device named **Spot CLI**, opened in a chromeless Edge window. Once it reports "Ready," pick **Spot CLI** from the device picker (`d`) and every existing control in this app targets it like any other device — no separate playback path to learn.
+
+Requires Spotify **Premium** and the `streaming` OAuth scope, which was added after this feature shipped — run `spot login` again if your existing session predates it. If Edge isn't installed, open the printed `http://127.0.0.1:<port>` URL in any browser that supports Spotify's SDK (Chrome, Edge, or Firefox).
 
 ## Weekly music diary
 

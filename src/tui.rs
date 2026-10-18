@@ -1,7 +1,7 @@
 use crate::{
     api::{Api, CoverPixels, Device, Playback, Playlist, Track},
     config::{Config, Pin, PinKind, Theme},
-    newmusic,
+    newmusic, webplayer,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -45,6 +45,11 @@ const BINDINGS: &[(&str, &str, &str)] = &[
     ("N", "newmusic", "Toggle new music mode"),
     ("s", "shuffle", "Toggle shuffle"),
     ("R", "repeat", "Cycle repeat mode (off / all / one)"),
+    (
+        "w",
+        "webplayer",
+        "Launch local web player (plays audio here instead of another device)",
+    ),
     ("x", "remove", "Remove selected track"),
     ("r", "recent", "Recently played"),
     ("z", "listening", "Listening mode (also after 60s idle)"),
@@ -73,6 +78,7 @@ enum Command {
     NewPlaylist(String),
     Shuffle(bool),
     Repeat(String),
+    WebPlayer,
 }
 enum Update {
     Busy(bool),
@@ -477,6 +483,7 @@ impl Ui {
                 };
                 Some(Command::Repeat(next.to_string()))
             }
+            "webplayer" => Some(Command::WebPlayer),
             "newmusic" => Some(Command::Newmusic),
             "recent" => Some(Command::Recent),
             _ => None,
@@ -1146,6 +1153,19 @@ async fn execute(
         }
         Command::Shuffle(on) => api.shuffle(on).await?,
         Command::Repeat(mode) => api.repeat(&mode).await?,
+        Command::WebPlayer => {
+            let port = webplayer::serve(config.client_id.clone(), dir.to_path_buf()).await?;
+            webplayer::open(port);
+            emit(
+                tx,
+                Update::Message(
+                    format!(
+                        "Web player launching at http://127.0.0.1:{port} — if a window doesn't open, paste that URL into a browser. Once it says Ready, pick \"Spot CLI\" from the device list (d)."
+                    ),
+                    false,
+                ),
+            );
+        }
         Command::Like(uri) => {
             api.like(&uri).await?;
             emit(tx, Update::Message("Saved to your library".into(), false));

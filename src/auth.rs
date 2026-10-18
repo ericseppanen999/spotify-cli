@@ -26,6 +26,10 @@ const SCOPES: &[&str] = &[
     "playlist-modify-public",
     "playlist-modify-private",
     "user-library-modify",
+    // Required by the Web Playback SDK (see webplayer.rs).
+    "streaming",
+    "user-read-email",
+    "user-read-private",
 ];
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Tokens {
