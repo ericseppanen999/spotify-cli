@@ -6,7 +6,7 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 use tokio::{
@@ -116,12 +116,23 @@ pub async fn serve(client_id: String, dir: PathBuf) -> Result<u16> {
 }
 
 /// Opens the player page in a lightweight Edge app window (no tabs/toolbar).
+/// Uses a dedicated profile dir so this instance shows up distinctly (by
+/// command line, and as its own window titled "Spot Web Player" rather than
+/// merging into your regular Edge windows) instead of a generic msedge.exe.
 /// Fire-and-forget: if Edge isn't on this machine, the caller's message
 /// includes the URL so the user can open it in any browser instead.
-pub fn open(port: u16) {
+pub fn open(port: u16, dir: &Path) {
     let url = format!("http://127.0.0.1:{port}");
+    let profile = dir.join("webplayer-profile");
     let _ = Command::new("cmd")
-        .args(["/C", "start", "", "msedge", &format!("--app={url}")])
+        .args([
+            "/C",
+            "start",
+            "",
+            "msedge",
+            &format!("--app={url}"),
+            &format!("--user-data-dir={}", profile.display()),
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
