@@ -132,6 +132,24 @@ pub fn open(port: u16, dir: &Path) {
             "msedge",
             &format!("--app={url}"),
             &format!("--user-data-dir={}", profile.display()),
+            // Trim child processes/background work this page doesn't need:
+            // no crash reporter, no GPU compositing (audio only, no video/
+            // canvas), and drop Edge's own extras (search indexing, sync,
+            // telemetry, component updates) on top of plain Chromium's.
+            "--disable-breakpad",
+            "--disable-gpu",
+            "--disable-sync",
+            "--disable-component-update",
+            "--disable-background-networking",
+            "--disable-domain-reliability",
+            "--disable-client-side-phishing-detection",
+            "--disable-default-apps",
+            "--disable-extensions",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=msEdgeSearchIndexer,msImplicitSignin,msEdgeTranslate,AutofillServerCommunication",
+            "--no-first-run",
+            "--no-default-browser-check",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
