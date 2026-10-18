@@ -1089,6 +1089,7 @@ async fn execute(
     config: &mut Config,
     dir: &std::path::Path,
     tx: &mpsc::UnboundedSender<Update>,
+    webplayer_port: &mut Option<u16>,
 ) -> Result<()> {
     match command {
         Command::Pin(pin) => {
@@ -1154,13 +1155,29 @@ async fn execute(
         Command::Shuffle(on) => api.shuffle(on).await?,
         Command::Repeat(mode) => api.repeat(&mode).await?,
         Command::WebPlayer => {
-            let port = webplayer::serve(config.client_id.clone(), dir.to_path_buf()).await?;
-            webplayer::open(port);
+            // Reuse the existing server/window instead of launching a second
+            // one -- an extra "Spot CLI" device confuses Spotify's backend
+            // about which device is active, causing random pauses/skips.
+            let (port, already_running) = match *webplayer_port {
+                Some(port) => (port, true),
+                None => {
+                    let port =
+                        webplayer::serve(config.client_id.clone(), dir.to_path_buf()).await?;
+                    *webplayer_port = Some(port);
+                    webplayer::open(port);
+                    (port, false)
+                }
+            };
+            let status = if already_running {
+                "already running — if you closed its window, paste this URL into a browser instead of pressing w again"
+            } else {
+                "launching now"
+            };
             emit(
                 tx,
                 Update::Message(
                     format!(
-                        "Web player launching at http://127.0.0.1:{port} — if a window doesn't open, paste that URL into a browser. Click its \"enable audio\" button once, then pick \"Spot CLI\" from the device list (d) and fully transfer playback to it."
+                        "Web player {status}: http://127.0.0.1:{port}. Click its \"enable audio\" button once, then pick \"Spot CLI\" from the device list (d) and fully transfer playback to it."
                     ),
                     false,
                 ),
@@ -1247,12 +1264,13 @@ async fn worker(
     let mut poll = tokio::time::interval(Duration::from_secs(5));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cover_url: Option<String> = None;
+    let mut webplayer_port: Option<u16> = None;
     loop {
         tokio::select! {
             command = rx.recv() => {
                 let Some(command) = command else { break; };
                 emit(&tx, Update::Busy(true));
-                if let Err(e) = execute(command, &mut api, &mut config, &dir, &tx).await { emit(&tx, Update::Message(e.to_string(), true)); }
+                if let Err(e) = execute(command, &mut api, &mut config, &dir, &tx, &mut webplayer_port).await { emit(&tx, Update::Message(e.to_string(), true)); }
                 emit(&tx, Update::Busy(false));
             }
             _ = poll.tick() => {

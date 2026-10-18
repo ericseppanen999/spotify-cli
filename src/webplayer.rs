@@ -16,7 +16,11 @@ use tokio::{
 
 const PLAYER_HTML: &str = r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Spot Web Player</title></head>
+<head>
+<meta charset="utf-8">
+<title>Spot Web Player</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%231DB954'/%3E%3C/svg%3E">
+</head>
 <body style="background:#101419;color:#89919b;font-family:monospace;padding:2rem">
 <h1 style="color:#1DB954">Spot CLI</h1>
 <p id="status">Connecting to Spotify...</p>
