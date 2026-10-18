@@ -1164,7 +1164,7 @@ async fn execute(
                     let port =
                         webplayer::serve(config.client_id.clone(), dir.to_path_buf()).await?;
                     *webplayer_port = Some(port);
-                    webplayer::open(port, dir);
+                    webplayer::open(port);
                     (port, false)
                 }
             };

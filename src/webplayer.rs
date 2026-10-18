@@ -6,7 +6,7 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 use tokio::{
@@ -116,14 +116,15 @@ pub async fn serve(client_id: String, dir: PathBuf) -> Result<u16> {
 }
 
 /// Opens the player page in a lightweight Edge app window (no tabs/toolbar).
-/// Uses a dedicated profile dir so this instance shows up distinctly (by
-/// command line, and as its own window titled "Spot Web Player" rather than
-/// merging into your regular Edge windows) instead of a generic msedge.exe.
+/// Shows up as its own window titled "Spot Web Player" rather than a
+/// generic msedge.exe, and its command line's unique --app=...:<port> is
+/// enough to pick it out of Task Manager/scripted profiling without a
+/// separate profile dir -- which broke DRM (see below) since Widevine's
+/// CDM component is downloaded per-profile and a fresh one doesn't have it.
 /// Fire-and-forget: if Edge isn't on this machine, the caller's message
 /// includes the URL so the user can open it in any browser instead.
-pub fn open(port: u16, dir: &Path) {
+pub fn open(port: u16) {
     let url = format!("http://127.0.0.1:{port}");
-    let profile = dir.join("webplayer-profile");
     let _ = Command::new("cmd")
         .args([
             "/C",
@@ -131,7 +132,6 @@ pub fn open(port: u16, dir: &Path) {
             "",
             "msedge",
             &format!("--app={url}"),
-            &format!("--user-data-dir={}", profile.display()),
             // Trim child processes/background work this page doesn't need:
             // no crash reporter, and drop Edge's own extras (search
             // indexing, sync, telemetry, component updates) on top of
