@@ -1160,7 +1160,7 @@ async fn execute(
                 tx,
                 Update::Message(
                     format!(
-                        "Web player launching at http://127.0.0.1:{port} — if a window doesn't open, paste that URL into a browser. Once it says Ready, pick \"Spot CLI\" from the device list (d)."
+                        "Web player launching at http://127.0.0.1:{port} — if a window doesn't open, paste that URL into a browser. Click its \"enable audio\" button once, then pick \"Spot CLI\" from the device list (d) and fully transfer playback to it."
                     ),
                     false,
                 ),

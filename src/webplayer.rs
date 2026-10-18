@@ -20,22 +20,32 @@ const PLAYER_HTML: &str = r#"<!doctype html>
 <body style="background:#101419;color:#89919b;font-family:monospace;padding:2rem">
 <h1 style="color:#1DB954">Spot CLI</h1>
 <p id="status">Connecting to Spotify...</p>
+<button id="enable" style="font-size:1.1rem;padding:0.6rem 1.2rem;background:#1DB954;color:#101419;border:none;border-radius:6px;cursor:pointer;display:none">
+  Click to enable audio
+</button>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script>
 window.onSpotifyWebPlaybackSDKReady = () => {
   const status = m => { document.getElementById('status').textContent = m; };
+  const enableBtn = document.getElementById('enable');
   const player = new Spotify.Player({
     name: 'Spot CLI',
     getOAuthToken: cb => fetch('/token').then(r => r.json()).then(d => cb(d.token)),
     volume: 0.5,
   });
   player.addListener('ready', () => {
-    status('Ready. Pick "Spot CLI" from the device list (d) in the terminal app, then control playback from there. Keep this window open.');
+    enableBtn.style.display = 'inline-block';
+    status('Click the button below once, then pick "Spot CLI" from the device list (d) in the terminal app and fully transfer playback to it -- if another device is still active too, commands can land on either one. Keep this window open.');
   });
   player.addListener('not_ready', () => status('Disconnected.'));
   player.addListener('initialization_error', ({ message }) => status('Initialization error: ' + message));
   player.addListener('authentication_error', ({ message }) => status('Authentication error: ' + message));
   player.addListener('account_error', ({ message }) => status('Account error (Spotify Premium is required): ' + message));
+  enableBtn.addEventListener('click', () => {
+    player.activateElement?.();
+    enableBtn.style.display = 'none';
+    status('Audio enabled. Pick "Spot CLI" from the device list (d) in the terminal app and transfer playback to it.');
+  });
   player.connect();
 };
 </script>

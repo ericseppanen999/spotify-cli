@@ -190,11 +190,11 @@ impl Api {
                     _ => bail!("Spotify {status}: {message}"),
                 }
             }
-            return if bytes.iter().all(u8::is_ascii_whitespace) {
-                Ok(Value::Null)
-            } else {
-                Ok(serde_json::from_slice(&bytes)?)
-            };
+            // Some endpoints send odd success bodies (empty, whitespace-only, a
+            // bare value with trailing junk). None of the mutation calls here
+            // use the parsed body, so a malformed one isn't a real failure --
+            // fall back to Null rather than erroring the whole command out.
+            return Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null));
         }
         unreachable!()
     }
@@ -628,6 +628,18 @@ mod tests {
             .mount(&s)
             .await;
         a.shuffle(true).await.unwrap();
+    }
+    #[tokio::test]
+    async fn trailing_garbage_after_a_value_is_ignored() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(method("PUT"))
+            .and(path("/me/player/repeat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("1x"))
+            .mount(&s)
+            .await;
+        a.repeat("off").await.unwrap();
     }
     #[tokio::test]
     async fn bodyless_mutations_set_content_length_zero() {
