@@ -133,11 +133,12 @@ pub fn open(port: u16, dir: &Path) {
             &format!("--app={url}"),
             &format!("--user-data-dir={}", profile.display()),
             // Trim child processes/background work this page doesn't need:
-            // no crash reporter, no GPU compositing (audio only, no video/
-            // canvas), and drop Edge's own extras (search indexing, sync,
-            // telemetry, component updates) on top of plain Chromium's.
+            // no crash reporter, and drop Edge's own extras (search
+            // indexing, sync, telemetry, component updates) on top of
+            // plain Chromium's. NOT --disable-gpu: modern Chromium can
+            // fail to create the app window surface at all without a GPU
+            // process on Windows, so that one isn't worth the ~63MB.
             "--disable-breakpad",
-            "--disable-gpu",
             "--disable-sync",
             "--disable-component-update",
             "--disable-background-networking",
