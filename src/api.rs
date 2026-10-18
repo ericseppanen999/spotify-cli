@@ -190,7 +190,7 @@ impl Api {
                     _ => bail!("Spotify {status}: {message}"),
                 }
             }
-            return if bytes.is_empty() {
+            return if bytes.iter().all(u8::is_ascii_whitespace) {
                 Ok(Value::Null)
             } else {
                 Ok(serde_json::from_slice(&bytes)?)
@@ -616,6 +616,18 @@ mod tests {
         let tracks = a.playlist_tracks(ID).await.unwrap();
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[1].name, "Second");
+    }
+    #[tokio::test]
+    async fn whitespace_only_body_is_treated_as_no_content() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(method("PUT"))
+            .and(path("/me/player/shuffle"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("\n"))
+            .mount(&s)
+            .await;
+        a.shuffle(true).await.unwrap();
     }
     #[tokio::test]
     async fn bodyless_mutations_set_content_length_zero() {
