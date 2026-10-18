@@ -103,7 +103,7 @@ After 60 seconds without keyboard input, listening mode displays a centered titl
 
 ## Local web player
 
-By default `spot` is a *remote* — play/pause/next/etc. control whatever device is already active (phone, speaker, the official desktop app). Pressing `w` launches an actual playback device backed by Spotify's official [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk): a tiny loopback-only HTTP server (`127.0.0.1`, random port) serves a minimal page that registers a Connect device named **Spot CLI**, opened in a chromeless Edge window. Once it reports "Ready," pick **Spot CLI** from the device picker (`d`) and every existing control in this app targets it like any other device — no separate playback path to learn.
+By default `spot` is a *remote* — play/pause/next/etc. control whatever device is already active (phone, speaker, the official desktop app). Pressing `w` launches an actual playback device backed by Spotify's official [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk): a tiny loopback-only HTTP server (`127.0.0.1`, random port) serves a minimal page that registers a Connect device named **Spot**, opened in a chromeless Edge window. Once it reports "Ready," pick **Spot** from the device picker (`d`) and every existing control in this app targets it like any other device — no separate playback path to learn.
 
 Requires Spotify **Premium** and the `streaming` OAuth scope, which was added after this feature shipped — run `spot login` again if your existing session predates it. If Edge isn't installed, open the printed `http://127.0.0.1:<port>` URL in any browser that supports Spotify's SDK (Chrome, Edge, or Firefox).
 

@@ -1156,7 +1156,7 @@ async fn execute(
         Command::Repeat(mode) => api.repeat(&mode).await?,
         Command::WebPlayer => {
             // Reuse the existing server/window instead of launching a second
-            // one -- an extra "Spot CLI" device confuses Spotify's backend
+            // one -- an extra "Spot" device confuses Spotify's backend
             // about which device is active, causing random pauses/skips.
             let (port, already_running) = match *webplayer_port {
                 Some(port) => (port, true),
@@ -1177,7 +1177,7 @@ async fn execute(
                 tx,
                 Update::Message(
                     format!(
-                        "Web player {status}: http://127.0.0.1:{port}. Click its \"enable audio\" button once, then pick \"Spot CLI\" from the device list (d) and fully transfer playback to it."
+                        "Web player {status}: http://127.0.0.1:{port}. Click its \"enable audio\" button once, then pick \"Spot\" from the device list (d) and fully transfer playback to it."
                     ),
                     false,
                 ),

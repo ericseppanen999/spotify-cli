@@ -22,7 +22,7 @@ const PLAYER_HTML: &str = r#"<!doctype html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%231DB954'/%3E%3C/svg%3E">
 </head>
 <body style="background:#101419;color:#89919b;font-family:monospace;padding:2rem">
-<h1 style="color:#1DB954">Spot CLI</h1>
+<h1 style="color:#1DB954">Spot</h1>
 <p id="status">Connecting to Spotify...</p>
 <button id="enable" style="font-size:1.1rem;padding:0.6rem 1.2rem;background:#1DB954;color:#101419;border:none;border-radius:6px;cursor:pointer;display:none">
   Click to enable audio
@@ -33,13 +33,13 @@ window.onSpotifyWebPlaybackSDKReady = () => {
   const status = m => { document.getElementById('status').textContent = m; };
   const enableBtn = document.getElementById('enable');
   const player = new Spotify.Player({
-    name: 'Spot CLI',
+    name: 'Spot',
     getOAuthToken: cb => fetch('/token').then(r => r.json()).then(d => cb(d.token)),
     volume: 0.5,
   });
   player.addListener('ready', () => {
     enableBtn.style.display = 'inline-block';
-    status('Click the button below once, then pick "Spot CLI" from the device list (d) in the terminal app and fully transfer playback to it -- if another device is still active too, commands can land on either one. Keep this window open.');
+    status('Click the button below once, then pick "Spot" from the device list (d) in the terminal app and fully transfer playback to it -- if another device is still active too, commands can land on either one. Keep this window open.');
   });
   player.addListener('not_ready', () => status('Disconnected.'));
   player.addListener('initialization_error', ({ message }) => status('Initialization error: ' + message));
@@ -48,7 +48,7 @@ window.onSpotifyWebPlaybackSDKReady = () => {
   enableBtn.addEventListener('click', () => {
     player.activateElement?.();
     enableBtn.style.display = 'none';
-    status('Audio enabled. Pick "Spot CLI" from the device list (d) in the terminal app and transfer playback to it.');
+    status('Audio enabled. Pick "Spot" from the device list (d) in the terminal app and transfer playback to it.');
   });
   player.connect();
 };
