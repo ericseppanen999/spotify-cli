@@ -149,9 +149,12 @@ impl Api {
                 request = request.json(body);
             } else if method != Method::GET {
                 // Spotify's gateway returns 411 Length Required for PUT/POST/DELETE
-                // requests with no body unless Content-Length is explicitly set;
-                // reqwest only does that when a body (even an empty one) is attached.
-                request = request.body(Vec::new());
+                // requests with no body unless Content-Length is explicitly set.
+                // An empty body alone isn't reliably enough to make reqwest/hyper
+                // emit the header, so set it directly.
+                request = request
+                    .header(reqwest::header::CONTENT_LENGTH, "0")
+                    .body(Vec::new());
             }
             let response = request.send().await.context("Cannot reach Spotify")?;
             let status = response.status();
@@ -613,6 +616,20 @@ mod tests {
         let tracks = a.playlist_tracks(ID).await.unwrap();
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[1].name, "Second");
+    }
+    #[tokio::test]
+    async fn bodyless_mutations_set_content_length_zero() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(method("PUT"))
+            .and(path("/me/player/pause"))
+            .and(header("content-length", "0"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        a.pause().await.unwrap();
     }
     #[tokio::test]
     async fn current_endpoints_and_search_limit() {
