@@ -1172,7 +1172,7 @@ async fn execute(
                 tx,
                 Update::Message(
                     format!(
-                        "Web player {status}: http://127.0.0.1:{port}. Click its \"enable audio\" button once, then pick \"Spot\" from the device list (d) and fully transfer playback to it."
+                        "Web player {status}: http://127.0.0.1:{port}. Playback moves to \"Spot\" automatically once it connects."
                     ),
                     false,
                 ),

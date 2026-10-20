@@ -21,14 +21,25 @@ const PLAYER_HTML: &str = r#"<!doctype html>
 <title>Spot Web Player</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%231DB954'/%3E%3C/svg%3E">
 </head>
-<body style="background:#101419;color:#89919b;font-family:monospace;padding:2rem">
+<body style="background:#101419;color:#89919b;font-family:monospace;padding:1rem;margin:0">
 <h1 style="color:#1DB954">Spot</h1>
 <p id="status">Connecting to Spotify...</p>
 <button id="enable" style="font-size:1.1rem;padding:0.6rem 1.2rem;background:#1DB954;color:#101419;border:none;border-radius:6px;cursor:pointer;display:none">
   Click to enable audio
 </button>
+<div id="tip" style="display:none;margin-top:1.5rem">
+  <p>You can skip this step next time by doing the following:</p>
+  <ol>
+    <li>In a regular Edge window, paste <code style="color:#1DB954">edge://settings/content/mediaAutoplay</code> into the address bar
+      (or go to <b>&middot;&middot;&middot; &rarr; Settings &rarr; Cookies and site permissions &rarr; Media autoplay</b>).</li>
+    <li>Under <b>Allow</b>, click <b>Add</b> and enter <code id="origin" style="color:#1DB954"></code></li>
+  </ol>
+</div>
 <script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script>
+// Backs up --window-size, which Edge ignores when it's already running.
+// Only app/popup windows honor this; a regular tab silently ignores it.
+window.resizeTo(460, 420);
 window.onSpotifyWebPlaybackSDKReady = () => {
   const status = m => { document.getElementById('status').textContent = m; };
   const enableBtn = document.getElementById('enable');
@@ -37,18 +48,40 @@ window.onSpotifyWebPlaybackSDKReady = () => {
     getOAuthToken: cb => fetch('/token').then(r => r.json()).then(d => cb(d.token)),
     volume: 0.5,
   });
-  player.addListener('ready', () => {
+  // Move playback here as soon as the device registers, so there's no
+  // trip to the device list. Only once per page load: 'ready' fires again
+  // after a reconnect, and by then the user may have moved playback away.
+  let transferred = false;
+  player.addListener('ready', ({ device_id }) => {
+    if (transferred) return;
+    transferred = true;
+    status('Connected. Moving playback here...');
+    fetch('/token').then(r => r.json()).then(d => fetch('https://api.spotify.com/v1/me/player', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + d.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_ids: [device_id], play: true }),
+    })).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      status('Playing here. Keep this window open.');
+    }).catch(e => status('Could not move playback here (' + e.message + '); pick "Spot" from the device list (d) in the terminal app instead. Keep this window open.'));
+  });
+  // Fallback for when the browser ignores --autoplay-policy (e.g. Edge was
+  // already running, so the new window joined it without our flags).
+  player.addListener('autoplay_failed', () => {
     enableBtn.style.display = 'inline-block';
-    status('Click the button below once, then pick "Spot" from the device list (d) in the terminal app and fully transfer playback to it -- if another device is still active too, commands can land on either one. Keep this window open.');
+    document.getElementById('origin').textContent = location.origin;
+    document.getElementById('tip').style.display = 'block';
+    status('The browser blocked autoplay -- click the button below to start audio. Keep this window open.');
   });
   player.addListener('not_ready', () => status('Disconnected.'));
   player.addListener('initialization_error', ({ message }) => status('Initialization error: ' + message));
   player.addListener('authentication_error', ({ message }) => status('Authentication error: ' + message));
   player.addListener('account_error', ({ message }) => status('Account error (Spotify Premium is required): ' + message));
   enableBtn.addEventListener('click', () => {
-    player.activateElement?.();
     enableBtn.style.display = 'none';
-    status('Audio enabled. Pick "Spot" from the device list (d) in the terminal app and transfer playback to it.');
+    document.getElementById('tip').style.display = 'none';
+    Promise.resolve(player.activateElement?.()).then(() => player.resume());
+    status('Playing here. Keep this window open.');
   });
   player.connect();
 };
@@ -98,9 +131,18 @@ async fn handle(stream: &mut TcpStream, auth: &mut Auth, http: &reqwest::Client)
     }
 }
 
-/// Starts the loopback token/player server in the background and returns its port.
+/// Preferred port, kept stable so the page's origin is too: browsers key
+/// per-site settings like "allow autoplay" by origin, port included, so a
+/// random port would lose that setting every launch.
+pub const PORT: u16 = 47823;
+
+/// Starts the loopback token/player server in the background and returns its
+/// port: [`PORT`], or a random one if that's taken.
 pub async fn serve(client_id: String, dir: PathBuf) -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let listener = match TcpListener::bind(("127.0.0.1", PORT)).await {
+        Ok(listener) => listener,
+        Err(_) => TcpListener::bind("127.0.0.1:0").await?,
+    };
     let port = listener.local_addr()?.port();
     let http = http_client()?;
     let mut auth = Auth::load(&client_id, &dir)?;
@@ -132,6 +174,8 @@ pub fn open(port: u16) {
             "",
             "msedge",
             &format!("--app={url}"),
+            // Small on boot; the page also resizes itself (see PLAYER_HTML).
+            "--window-size=460,420",
             // Trim child processes/background work this page doesn't need:
             // no crash reporter, and drop Edge's own extras (search
             // indexing, sync, telemetry, component updates) on top of
@@ -151,6 +195,11 @@ pub fn open(port: u16) {
             "--disable-features=msEdgeSearchIndexer,msImplicitSignin,msEdgeTranslate,AutofillServerCommunication",
             "--no-first-run",
             "--no-default-browser-check",
+            // Lets the page start audio without the "enable audio" click.
+            // Ignored if Edge is already running (e.g. startup boost) --
+            // allowing autoplay for this origin in Edge's settings covers
+            // that case.
+            "--autoplay-policy=no-user-gesture-required",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

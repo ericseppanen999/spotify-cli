@@ -103,7 +103,14 @@ After 60 seconds without keyboard input, listening mode displays a centered titl
 
 ## Local web player
 
-By default `spot` is a *remote* — play/pause/next/etc. control whatever device is already active (phone, speaker, the official desktop app). Pressing `w` launches an actual playback device backed by Spotify's official [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk): a tiny loopback-only HTTP server (`127.0.0.1`, random port) serves a minimal page that registers a Connect device named **Spot**, opened in a chromeless Edge window. Once it reports "Ready," pick **Spot** from the device picker (`d`) and every existing control in this app targets it like any other device — no separate playback path to learn.
+By default `spot` is a *remote* — play/pause/next/etc. control whatever device is already active (phone, speaker, the official desktop app). Pressing `w` launches an actual playback device backed by Spotify's official [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk): a tiny loopback-only HTTP server (`127.0.0.1`, port 47823) serves a minimal page that registers a Connect device named **Spot**, opened in a chromeless Edge window. As soon as it connects, the page transfers playback to **Spot** on its own, and from then on every existing control in this app targets it like any other device — no separate playback path to learn.
+
+If the Spot window says the browser blocked autoplay (usually because Edge was already running and ignored the launch flags), click its "enable audio" button to start playback. You can skip this step next time by doing the following:
+
+1. In a regular Edge window, paste `edge://settings/content/mediaAutoplay` into the address bar (or go to **⋯ → Settings → Cookies and site permissions → Media autoplay**).
+2. Under **Allow**, click **Add** and enter `http://127.0.0.1:47823`.
+
+The server always uses that port (falling back to a random one only if it's taken) so the setting sticks. The Spot window shows these same steps when it gets blocked.
 
 Requires Spotify **Premium** and the `streaming` OAuth scope, which was added after this feature shipped — run `spot login` again if your existing session predates it. If Edge isn't installed, open the printed `http://127.0.0.1:<port>` URL in any browser that supports Spotify's SDK (Chrome, Edge, or Firefox).
 
