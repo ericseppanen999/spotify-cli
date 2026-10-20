@@ -87,13 +87,15 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | l | Like selected track (current track if no selection) |
 | v | View the playing song's album |
 | V | View the playing artist's songs (best-matching search results, up to 50) |
+| e | Add the selected song to Up Next |
+| J / K | In Up Next: move the selected song down / up |
 | d | Device picker |
 | t | Choose a color theme |
 | + / - | Volume |
 | N | Toggle new music mode |
 | r | Recently played |
 | z | Listening mode (also enters automatically after 60 seconds idle) |
-| x | Remove track from viewed playlist; type `yes` to confirm |
+| x | Remove track from viewed playlist (type `yes` to confirm), or from Up Next |
 | w | Launch the local web player (see below) |
 | ? | Help |
 | Esc | Close popup |
@@ -102,6 +104,14 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 Type to filter pickers; use arrows and Enter to select. Removing a track removes all occurrences of that URI from the playlist. Spotify permits editing only playlists you own or collaborate on. In current Development Mode, reading playlist contents is also limited to those playlists.
 
 After 60 seconds without keyboard input, listening mode displays a centered title, artist, and live progress bar. Any key returns to your previous view; that first key only wakes the interface, so it won't skip a track, pause, or quit. Playback continues updating while this view is shown. Press `z` to enter it immediately.
+
+## Up Next queue
+
+The **Up Next** panel under Now Playing is a queue you can edit: `e` adds the selected song, Tab focuses the panel, `J`/`K` reorder, `x` removes, and Enter skips straight to that song. `n` (next) plays the top of the list. Below your songs, dimmed, is what Spotify plays afterward: the rest of the album or playlist.
+
+Spotify's Web API can only *append* to its queue, so songs wait in `spot` instead, where they can be edited freely. Each one is handed to Spotify's real queue about 15 seconds before the current song ends, so playback stays gapless and the album or playlist picks back up when the list runs out. Once handed off, a song shows as **next** and can no longer be moved or removed.
+
+The queue lives in a small background process (`spot daemon`, started automatically the first time you queue a song), so it keeps advancing after you close `spot`. It saves the queue to `queue.json` in the config directory, and if it isn't running when `spot` opens with a saved queue (after a reboot, say), `spot` restarts it. It exits on its own about 30 seconds after the queue empties. It listens only on `127.0.0.1:47824`.
 
 ## Local web player
 

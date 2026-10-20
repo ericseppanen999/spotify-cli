@@ -4,7 +4,7 @@ use spotify_cli::{
     api::{self, Api},
     auth::{self, Auth},
     config::{self, Config},
-    newmusic, tui,
+    daemon, newmusic, tui,
 };
 
 #[derive(Parser)]
@@ -78,6 +78,10 @@ enum Command {
     Config,
     /// Open the keyboard-driven terminal interface
     Tui,
+    /// Background process that keeps Up Next going after the TUI exits;
+    /// started automatically when needed.
+    #[command(hide = true)]
+    Daemon,
 }
 #[derive(Subcommand)]
 enum PlaylistCommand {
@@ -261,6 +265,7 @@ async fn run() -> Result<()> {
             println!("New music mode: on ({id})");
         }
         Command::Tui => tui::run(api, config, dir).await?,
+        Command::Daemon => daemon::run(api, dir).await?,
         _ => unreachable!(),
     }
     Ok(())

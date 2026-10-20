@@ -346,7 +346,7 @@ impl Api {
         limit: usize,
     ) -> Result<Vec<Value>> {
         anyhow::ensure!((1..=100).contains(&limit), "Search limit must be 1–100");
-        let mut items = Vec::new();
+        let mut items: Vec<Value> = Vec::new();
         let mut offset = offset;
         while items.len() < limit {
             let result = self.search(query, kind, offset).await?;
@@ -358,7 +358,18 @@ impl Api {
                 break;
             }
             offset += batch.len();
-            items.extend(batch.iter().take(limit - items.len()).cloned());
+            // Development Mode's result windows overlap from page to page,
+            // so later pages repeat earlier hits.
+            let fresh: Vec<_> = batch
+                .iter()
+                .filter(|item| match item["uri"].as_str() {
+                    Some(uri) => !items.iter().any(|seen| seen["uri"] == uri),
+                    None => true,
+                })
+                .take(limit - items.len())
+                .cloned()
+                .collect();
+            items.extend(fresh);
             if page["next"].as_str().is_none() {
                 break;
             }
@@ -380,13 +391,14 @@ impl Api {
         Ok(tracks)
     }
     /// The artist's most relevant songs, via search rather than the
-    /// top-tracks endpoint, which Development Mode apps can't use. Search
-    /// matches names loosely, so results are kept only if they credit this
-    /// exact artist.
+    /// top-tracks endpoint, which Development Mode apps can't use (403).
+    /// A plain name search, not an `artist:` filter: in Development Mode the
+    /// filter caps out at 5 results total, the plain query at ~20. Search
+    /// matches loosely, so results are kept only if they credit this exact
+    /// artist.
     pub async fn artist_tracks(&mut self, artist: &Artist) -> Result<Vec<Track>> {
-        let query = format!("artist:\"{}\"", artist.name.replace('"', ""));
         Ok(self
-            .search_tracks(&query)
+            .search_tracks(&artist.name)
             .await?
             .into_iter()
             .filter(|t| t.artists.iter().any(|a| a.uri == artist.uri))
@@ -451,6 +463,16 @@ impl Api {
         .await?;
         Ok(())
     }
+    /// What Spotify will play next: its own queue, then the rest of the
+    /// album/playlist.
+    pub async fn upcoming(&mut self) -> Result<Vec<Track>> {
+        #[derive(Deserialize)]
+        struct Upcoming {
+            #[serde(default)]
+            queue: Vec<Track>,
+        }
+        Ok(self.get::<Upcoming>("/me/player/queue", &[]).await?.queue)
+    }
     /// Downloads album art, keeping its native resolution (the terminal renderer samples
     /// from this directly) so detail isn't lost to an early fixed-size downsample.
     pub async fn cover_art(&self, url: &str) -> Result<CoverPixels> {
@@ -483,11 +505,13 @@ impl Api {
             })
             .collect())
     }
+    /// Uses the generic library endpoint: Development Mode apps get 403 from
+    /// the old per-type `/me/tracks` since Spotify's February 2026 changes.
     pub async fn like(&mut self, track: &str) -> Result<()> {
         self.request(
             Method::PUT,
-            "/me/tracks",
-            &[("ids", &spotify_id(track, "track")?)],
+            "/me/library",
+            &[("uris", &track_uri(track)?)],
             None,
         )
         .await?;
@@ -699,14 +723,37 @@ mod tests {
         a.pause().await.unwrap();
     }
     #[tokio::test]
+    async fn search_drops_repeats_from_overlapping_pages() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        for (offset, uris, next) in [
+            ("0", ["a", "b"], json!("more")),
+            ("2", ["b", "c"], json!(null)),
+        ] {
+            let items: Vec<_> = uris.iter().map(|u| json!({"uri": u})).collect();
+            Mock::given(path("/search"))
+                .and(query_param("offset", offset))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"tracks":{"items":items,"next":next}})),
+                )
+                .mount(&s)
+                .await;
+        }
+        let items = a.search_results("q", "track", 0, 50).await.unwrap();
+        let uris: Vec<_> = items.iter().map(|i| i["uri"].as_str().unwrap()).collect();
+        assert_eq!(uris, ["a", "b", "c"]);
+    }
+    #[tokio::test]
     async fn current_endpoints_and_search_limit() {
         let s = MockServer::start().await;
         let d = tempfile::tempdir().unwrap();
         let mut a = api(&s, d.path());
         let uri = format!("spotify:track:{ID}");
         Mock::given(method("PUT"))
-            .and(path("/me/tracks"))
-            .and(query_param("ids", ID))
+            .and(path("/me/library"))
+            .and(query_param("uris", uri.as_str()))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&s)

@@ -79,6 +79,21 @@ impl Auth {
         write_private(&self.path, &serde_json::to_vec(&self.tokens)?)
     }
     pub async fn refresh(&mut self, http: &reqwest::Client) -> Result<()> {
+        // Other processes share tokens.json (the queue daemon) and may have
+        // refreshed already -- possibly rotating the refresh token, which
+        // would leave ours stale. Adopt theirs when it's newer and still good.
+        if let Some(saved) = std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Tokens>(&bytes).ok())
+        {
+            if saved.access_token != self.tokens.access_token
+                && saved.expires_at > Utc::now().timestamp() + 60
+            {
+                self.tokens = saved;
+                return Ok(());
+            }
+            self.tokens.refresh_token = saved.refresh_token;
+        }
         let token = client(&self.client_id, &self.token_url)?
             .exchange_refresh_token(&RefreshToken::new(self.tokens.refresh_token.clone()))
             .request_async(http)

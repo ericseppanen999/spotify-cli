@@ -1,7 +1,10 @@
 use crate::{
     api::{spotify_id, Album, Api, Artist, CoverPixels, Device, Playback, Playlist, Track},
     config::{Config, Pin, PinKind, Theme},
-    newmusic, webplayer,
+    daemon::{self, Request},
+    newmusic,
+    queue::Queue,
+    webplayer,
 };
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -37,6 +40,9 @@ const BINDINGS: &[(&str, &str, &str)] = &[
         "Add playing song to this week's New Music",
     ),
     ("l", "like", "Like selected track"),
+    ("e", "queue", "Add selected song to the queue"),
+    ("J", "move_down", "Move queued song down"),
+    ("K", "move_up", "Move queued song up"),
     ("v", "view_album", "View playing song's album"),
     ("V", "view_artist", "View playing artist's songs"),
     ("d", "devices", "Choose device"),
@@ -57,6 +63,51 @@ const BINDINGS: &[(&str, &str, &str)] = &[
     ("z", "listening", "Listening mode (also after 60s idle)"),
     ("?", "help", "Help"),
     ("q", "quit", "Quit"),
+];
+/// How the help popup groups BINDINGS, by action name.
+const HELP_SECTIONS: &[(&str, &[&str])] = &[
+    (
+        "Playback",
+        &[
+            "toggle",
+            "next",
+            "previous",
+            "louder",
+            "quieter",
+            "shuffle",
+            "repeat",
+            "devices",
+            "webplayer",
+        ],
+    ),
+    (
+        "Browse",
+        &[
+            "down",
+            "up",
+            "focus",
+            "play",
+            "search",
+            "picker",
+            "recent",
+            "view_album",
+            "view_artist",
+        ],
+    ),
+    ("Up Next", &["queue", "move_down", "move_up"]),
+    (
+        "Library & playlists",
+        &[
+            "like",
+            "add",
+            "add_current",
+            "create",
+            "remove",
+            "pin",
+            "newmusic",
+        ],
+    ),
+    ("App", &["listening", "theme", "help", "quit"]),
 ];
 #[derive(Clone)]
 enum Command {
@@ -91,6 +142,10 @@ enum Command {
     Shuffle(bool),
     Repeat(String),
     WebPlayer,
+    Enqueue(Track),
+    Unqueue(usize),
+    MoveQueued(usize, isize),
+    PlayQueued(usize),
 }
 enum Update {
     Busy(bool),
@@ -104,12 +159,15 @@ enum Update {
     Pins(Vec<Pin>),
     Theme(Theme),
     Cover(Option<CoverPixels>),
+    Queue(Box<Queue>),
+    Upcoming(Vec<Track>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Panel {
     Pins,
     Playlists,
     Tracks,
+    Queue,
 }
 enum Popup {
     Help,
@@ -130,6 +188,8 @@ struct Ui {
     track_state: ListState,
     popup_state: ListState,
     pin_state: ListState,
+    queue: Queue,
+    queue_state: ListState,
     focus: Panel,
     popup: Option<Popup>,
     input: String,
@@ -158,6 +218,8 @@ impl Ui {
             track_state: ListState::default().with_selected(Some(0)),
             popup_state: ListState::default().with_selected(Some(0)),
             pin_state: ListState::default().with_selected(Some(0)),
+            queue: Queue::default(),
+            queue_state: ListState::default().with_selected(Some(0)),
             focus: if config.pins.is_empty() {
                 Panel::Playlists
             } else {
@@ -209,6 +271,16 @@ impl Ui {
             Update::Newmusic(on) => self.config.newmusic = on,
             Update::Theme(theme) => self.config.theme = theme,
             Update::Cover(c) => self.cover = c,
+            Update::Queue(queue) => {
+                let upcoming = std::mem::take(&mut self.queue.upcoming);
+                self.queue = *queue;
+                self.queue.upcoming = upcoming;
+                let len = self.queue.pending.len();
+                self.queue_state.select(
+                    (len > 0).then(|| self.queue_state.selected().unwrap_or(0).min(len - 1)),
+                );
+            }
+            Update::Upcoming(upcoming) => self.queue.upcoming = upcoming,
             Update::Pins(pins) => {
                 self.config.pins = pins;
                 self.pin_state.select(if self.config.pins.is_empty() {
@@ -242,7 +314,12 @@ impl Ui {
                 .tracks
                 .get(self.track_state.selected().unwrap_or(0))
                 .map(|t| t.uri.clone()),
+            Panel::Queue => self.selected_queued().map(|(_, t)| t.uri.clone()),
         }
+    }
+    fn selected_queued(&self) -> Option<(usize, &Track)> {
+        let index = self.queue_state.selected()?;
+        self.queue.pending.get(index).map(|t| (index, t))
     }
     fn selected_pin(&self) -> Option<Pin> {
         match self.focus {
@@ -259,15 +336,16 @@ impl Ui {
                     uri: format!("spotify:playlist:{}", p.id),
                     name: p.name.clone(),
                 }),
-            Panel::Tracks => self
-                .tracks
-                .get(self.track_state.selected().unwrap_or(0))
-                .filter(|t| t.uri.starts_with("spotify:track:"))
-                .map(|t| Pin {
-                    kind: PinKind::Track,
-                    uri: t.uri.clone(),
-                    name: t.label(),
-                }),
+            Panel::Tracks | Panel::Queue => match self.focus {
+                Panel::Queue => self.selected_queued().map(|(_, t)| t),
+                _ => self.tracks.get(self.track_state.selected().unwrap_or(0)),
+            }
+            .filter(|t| t.uri.starts_with("spotify:track:"))
+            .map(|t| Pin {
+                kind: PinKind::Track,
+                uri: t.uri.clone(),
+                name: t.label(),
+            }),
         }
     }
     fn choices(&self) -> Vec<(String, Command)> {
@@ -355,7 +433,7 @@ impl Ui {
                 }
                 KeyCode::Down => {
                     let len = if matches!(self.popup, Some(Popup::Help)) {
-                        BINDINGS.len() + 1
+                        help_lines(self).len()
                     } else {
                         self.choices().len()
                     };
@@ -363,7 +441,7 @@ impl Ui {
                 }
                 KeyCode::Up => {
                     let len = if matches!(self.popup, Some(Popup::Help)) {
-                        BINDINGS.len() + 1
+                        help_lines(self).len()
                     } else {
                         self.choices().len()
                     };
@@ -410,7 +488,8 @@ impl Ui {
                 self.focus = match self.focus {
                     Panel::Pins => Panel::Playlists,
                     Panel::Playlists => Panel::Tracks,
-                    Panel::Tracks => Panel::Pins,
+                    Panel::Tracks => Panel::Queue,
+                    Panel::Queue => Panel::Pins,
                 };
                 None
             }
@@ -426,9 +505,42 @@ impl Ui {
                     Panel::Pins => {
                         move_selection(&mut self.pin_state, self.config.pins.len(), delta)
                     }
+                    Panel::Queue => {
+                        move_selection(&mut self.queue_state, self.queue.pending.len(), delta)
+                    }
                 }
                 None
             }
+            "move_down" | "move_up" if self.focus == Panel::Queue => {
+                let delta = if action == "move_down" { 1 } else { -1 };
+                self.selected_queued().map(|(index, _)| index).map(|index| {
+                    // Keep the moved song selected.
+                    move_selection(&mut self.queue_state, self.queue.pending.len(), delta);
+                    Command::MoveQueued(index, delta)
+                })
+            }
+            "play" if self.focus == Panel::Queue => self
+                .selected_queued()
+                .map(|(index, _)| Command::PlayQueued(index)),
+            "remove" if self.focus == Panel::Queue => self
+                .selected_queued()
+                .map(|(index, _)| Command::Unqueue(index)),
+            "queue" => match self.focus {
+                Panel::Tracks => self
+                    .tracks
+                    .get(self.track_state.selected().unwrap_or(0))
+                    .cloned(),
+                Panel::Pins => self
+                    .selected_pin()
+                    .filter(|p| p.kind == PinKind::Track)
+                    .map(|p| Track {
+                        uri: p.uri,
+                        name: p.name,
+                        ..Default::default()
+                    }),
+                _ => None,
+            }
+            .map(Command::Enqueue),
             "pin" => self.selected_pin().map(Command::Pin),
             "play" if self.focus == Panel::Pins => self.selected_pin().map(|p| match p.kind {
                 PinKind::Track => Command::Play(p.uri),
@@ -557,6 +669,46 @@ fn move_selection(state: &mut ListState, len: usize, delta: isize) {
             (state.selected().unwrap_or(0) as isize + delta).rem_euclid(len as isize) as usize,
         ));
     }
+}
+/// The help popup's contents: BINDINGS grouped under HELP_SECTIONS headings,
+/// showing each action's current keys (including config remaps).
+fn help_lines(ui: &Ui) -> Vec<Line<'static>> {
+    let accent = color(&ui.config.theme.accent, Color::Green);
+    let mut lines = Vec::new();
+    for (heading, actions) in HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::styled(
+            *heading,
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+        for (k, a, d) in BINDINGS.iter().filter(|(_, a, _)| actions.contains(a)) {
+            let mut keys = ui
+                .config
+                .keys
+                .iter()
+                .filter(|(_, v)| v.as_str() == *a)
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>();
+            if !ui.config.keys.contains_key(*k) {
+                keys.insert(0, k);
+            }
+            let remapped = keys.join(", ");
+            lines.push(Line::from(format!(
+                "  {:<12} {}",
+                if remapped.is_empty() {
+                    "(unbound)"
+                } else {
+                    &remapped
+                },
+                d
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Esc closes popups · Ctrl+C quits"));
+    lines
 }
 fn fuzzy(query: &str, text: &str) -> bool {
     let lower = text.to_lowercase();
@@ -692,14 +844,25 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
         .title(" Now Playing ");
-    let inner = player.inner(panels[2]);
-    frame.render_widget(player, panels[2]);
+    let right =
+        Layout::vertical([Constraint::Min(11), Constraint::Percentage(40)]).split(panels[2]);
+    draw_queue(
+        frame,
+        ui,
+        right[1],
+        border(" Up Next · e ".into(), ui.focus == Panel::Queue),
+    );
+    let inner = player.inner(right[0]);
+    frame.render_widget(player, right[0]);
     let text_rows = 9u16;
     let art_width = ui.cover.as_ref().map(|_| inner.width).unwrap_or(0);
     let art_height = ui
         .cover
         .as_ref()
         .map(|_| (art_width / 2).min(inner.height.saturating_sub(text_rows)))
+        // A sliver of art (the queue below takes room on short terminals)
+        // reads as a glitch rather than a cover.
+        .filter(|h| *h >= 4)
         .unwrap_or(0);
     let mut player_constraints = Vec::new();
     if art_height > 0 {
@@ -845,34 +1008,9 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         let inside = block.inner(area);
         frame.render_widget(block, area);
         if matches!(popup, Popup::Help) {
-            let mut lines: Vec<Line> = BINDINGS
-                .iter()
-                .map(|(k, a, d)| {
-                    let mut keys = ui
-                        .config
-                        .keys
-                        .iter()
-                        .filter(|(_, v)| v.as_str() == *a)
-                        .map(|(k, _)| k.as_str())
-                        .collect::<Vec<_>>();
-                    if !ui.config.keys.contains_key(*k) {
-                        keys.insert(0, k);
-                    }
-                    let remapped = keys.join(", ");
-                    Line::from(format!(
-                        "{:<12} {}",
-                        if remapped.is_empty() {
-                            "(unbound)"
-                        } else {
-                            &remapped
-                        },
-                        d
-                    ))
-                })
-                .collect();
-            lines.push(Line::from("Esc closes popups · Ctrl+C quits"));
             frame.render_widget(
-                Paragraph::new(lines).scroll((ui.popup_state.selected().unwrap_or(0) as u16, 0)),
+                Paragraph::new(help_lines(ui))
+                    .scroll((ui.popup_state.selected().unwrap_or(0) as u16, 0)),
                 inside,
             );
         } else {
@@ -918,6 +1056,71 @@ fn progress(ui: &Ui) -> (u64, u64, f64) {
             position as f64 / duration as f64
         },
     )
+}
+/// The app's own editable queue (selectable), under the song already handed
+/// to Spotify and above what Spotify itself plays after (both read-only).
+fn draw_queue(frame: &mut Frame, ui: &Ui, area: Rect, block: Block) {
+    let accent = color(&ui.config.theme.accent, Color::Green);
+    let dim = color(&ui.config.theme.dim, Color::DarkGray);
+    let highlight = color(&ui.config.theme.highlight, Color::DarkGray);
+    let queue = &ui.queue;
+    let mut items = Vec::new();
+    if let Some(handed) = &queue.handed {
+        items.push(
+            ListItem::new(format!("next  {}", handed.label())).style(Style::default().fg(accent)),
+        );
+    }
+    let first = items.len();
+    items.extend(
+        queue
+            .pending
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ListItem::new(format!("{:>2}. {}", i + 1, t.label()))),
+    );
+    // Spotify's list starts with the handed-off song, already shown above.
+    let skip = queue
+        .handed
+        .as_ref()
+        .and_then(|h| queue.upcoming.iter().position(|t| t.uri == h.uri))
+        .map_or(0, |i| i + 1);
+    let then: Vec<_> = queue.upcoming.iter().skip(skip).take(10).collect();
+    if items.is_empty() {
+        items.push(
+            ListItem::new("Select a song · e to queue · J/K to reorder")
+                .style(Style::default().fg(dim)),
+        );
+    }
+    if !then.is_empty() {
+        items.push(
+            ListItem::new("then from Spotify")
+                .style(Style::default().fg(dim).add_modifier(Modifier::ITALIC)),
+        );
+        items.extend(
+            then.into_iter().map(|t| {
+                ListItem::new(format!("    {}", t.label())).style(Style::default().fg(dim))
+            }),
+        );
+    }
+    let mut state = ListState::default().with_selected(
+        ui.queue_state
+            .selected()
+            .filter(|i| *i < queue.pending.len())
+            .map(|i| i + first),
+    );
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(if ui.focus == Panel::Queue {
+            highlight
+        } else {
+            Color::Reset
+        }))
+        .highlight_symbol(if ui.focus == Panel::Queue {
+            "› "
+        } else {
+            "  "
+        });
+    frame.render_stateful_widget(list, area, &mut state);
 }
 fn draw_listening(frame: &mut Frame, ui: &Ui) {
     let area = frame.area();
@@ -1110,6 +1313,13 @@ fn emit(tx: &mpsc::UnboundedSender<Update>, update: Update) {
 fn playlist_uri(id: &str) -> Result<String> {
     Ok(format!("spotify:playlist:{}", spotify_id(id, "playlist")?))
 }
+/// Shows the daemon's queue, and any error that came with it.
+fn show_queue(tx: &mpsc::UnboundedSender<Update>, reply: daemon::Reply) {
+    emit(tx, Update::Queue(Box::new(reply.queue)));
+    if let Some(error) = reply.error {
+        emit(tx, Update::Message(error, true));
+    }
+}
 async fn execute(
     command: Command,
     api: &mut Api,
@@ -1185,7 +1395,23 @@ async fn execute(
                 api.play(None).await?;
             }
         }
-        Command::Next => api.next().await?,
+        Command::Next => match daemon::call(&Request::Next).await {
+            Ok(reply) => show_queue(tx, reply),
+            // No daemon running means nothing is queued.
+            Err(_) => api.next().await?,
+        },
+        Command::Enqueue(track) => {
+            let name = track.name.clone();
+            show_queue(tx, daemon::call_spawning(&Request::Add { track }).await?);
+            emit(tx, Update::Message(format!("Queued {name}"), false));
+        }
+        Command::Unqueue(index) => show_queue(tx, daemon::call(&Request::Remove { index }).await?),
+        Command::MoveQueued(index, delta) => {
+            show_queue(tx, daemon::call(&Request::Shift { index, delta }).await?)
+        }
+        Command::PlayQueued(index) => {
+            show_queue(tx, daemon::call(&Request::PlayNow { index }).await?)
+        }
         Command::Previous => api.previous().await?,
         Command::Play(uri) => api.play(Some(&uri)).await?,
         Command::PlayFrom { context, uris, uri } => {
@@ -1316,6 +1542,12 @@ async fn worker(
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut cover_url: Option<String> = None;
     let mut webplayer_port: Option<u16> = None;
+    let mut playing_uri: Option<String> = None;
+    // A queue saved by an earlier session whose daemon isn't running (say,
+    // after a reboot): pick it back up.
+    if !daemon::load(&dir).is_empty() && daemon::call(&Request::Get).await.is_err() {
+        let _ = daemon::spawn();
+    }
     loop {
         tokio::select! {
             command = rx.recv() => {
@@ -1335,6 +1567,17 @@ async fn worker(
                                 None => None,
                             };
                             emit(&tx, Update::Cover(cover));
+                        }
+                        let uri = p.item.as_ref().map(|t| t.uri.clone());
+                        if uri != playing_uri {
+                            playing_uri = uri;
+                            if let Ok(upcoming) = api.upcoming().await {
+                                emit(&tx, Update::Upcoming(upcoming));
+                            }
+                        }
+                        match daemon::call(&Request::Get).await {
+                            Ok(reply) => show_queue(&tx, reply),
+                            Err(_) => emit(&tx, Update::Queue(Box::default())),
                         }
                         emit(&tx, Update::Playback(Box::new(p)));
                     }
@@ -1441,6 +1684,8 @@ pub fn preview() -> Result<ratatui::buffer::Buffer> {
             ..Default::default()
         }),
     };
+    ui.queue.pending = vec![ui.tracks[2].clone(), ui.tracks[3].clone()];
+    ui.queue.upcoming = vec![ui.tracks[0].clone()];
     ui.notice("Added to New Music, week of Oct 16".into(), false);
     ui.cover = Some(
         (0..8)
@@ -1572,6 +1817,48 @@ mod tests {
             Command::PlayFrom { context: Some(c), uris, uri }
                 if c == "spotify:album:a" && uris.len() == 2 && uri == "spotify:track:1"
         ));
+    }
+    #[test]
+    fn queue_keys_act_on_the_queue_panel() {
+        let mut ui = Ui::new(Config::default());
+        let (tx, mut rx) = mpsc::channel(1);
+        let press = |ui: &mut Ui, code| ui.key(KeyEvent::new(code, KeyModifiers::NONE), &tx);
+        ui.update(Update::Tracks(
+            vec![Track {
+                uri: "spotify:track:1".into(),
+                ..Default::default()
+            }],
+            "Search".into(),
+            None,
+            None,
+        ));
+        press(&mut ui, KeyCode::Char('e'));
+        assert!(
+            matches!(rx.try_recv().unwrap(), Command::Enqueue(t) if t.uri == "spotify:track:1")
+        );
+        let mut queue = Queue::default();
+        queue.add(ui.tracks[0].clone());
+        queue.add(ui.tracks[0].clone());
+        ui.update(Update::Queue(Box::new(queue)));
+        press(&mut ui, KeyCode::Tab);
+        assert!(ui.focus == Panel::Queue);
+        press(&mut ui, KeyCode::Char('J'));
+        assert!(matches!(rx.try_recv().unwrap(), Command::MoveQueued(0, 1)));
+        assert_eq!(ui.queue_state.selected(), Some(1));
+        press(&mut ui, KeyCode::Char('x'));
+        assert!(matches!(rx.try_recv().unwrap(), Command::Unqueue(1)));
+        press(&mut ui, KeyCode::Enter);
+        assert!(matches!(rx.try_recv().unwrap(), Command::PlayQueued(1)));
+    }
+    #[test]
+    fn every_binding_has_one_help_section() {
+        for (_, action, _) in BINDINGS {
+            let sections = HELP_SECTIONS
+                .iter()
+                .filter(|(_, actions)| actions.contains(action))
+                .count();
+            assert_eq!(sections, 1, "{action} is in {sections} help sections");
+        }
     }
     #[test]
     fn fuzzy_subsequence() {
