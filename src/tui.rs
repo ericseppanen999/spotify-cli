@@ -1,5 +1,5 @@
 use crate::{
-    api::{Album, Api, Artist, CoverPixels, Device, Playback, Playlist, Track},
+    api::{spotify_id, Album, Api, Artist, CoverPixels, Device, Playback, Playlist, Track},
     config::{Config, Pin, PinKind, Theme},
     newmusic, webplayer,
 };
@@ -69,6 +69,14 @@ enum Command {
     Next,
     Previous,
     Play(String),
+    /// Plays `uri` and keeps going through the rest of the list: within
+    /// `context` (an album or playlist URI) when there is one, otherwise
+    /// through `uris`, the loaded list in order.
+    PlayFrom {
+        context: Option<String>,
+        uris: Vec<String>,
+        uri: String,
+    },
     Devices,
     Transfer(String),
     Volume(i16),
@@ -87,7 +95,8 @@ enum Command {
 enum Update {
     Busy(bool),
     Playlists(Vec<Playlist>),
-    Tracks(Vec<Track>, String, Option<String>),
+    /// Tracks, title, playlist ID (for removal), and playback context URI.
+    Tracks(Vec<Track>, String, Option<String>, Option<String>),
     Playback(Box<Playback>),
     Devices(Vec<Device>),
     Message(String, bool),
@@ -126,6 +135,7 @@ struct Ui {
     input: String,
     title: String,
     playlist: Option<String>,
+    context: Option<String>,
     message: String,
     error: bool,
     message_at: Instant,
@@ -157,6 +167,7 @@ impl Ui {
             input: String::new(),
             title: "Choose a playlist and press Enter".into(),
             playlist: None,
+            context: None,
             message: "Connecting to Spotify...".into(),
             error: false,
             message_at: Instant::now(),
@@ -178,10 +189,11 @@ impl Ui {
         match update {
             Update::Busy(b) => self.busy = b,
             Update::Playlists(p) => self.playlists = p,
-            Update::Tracks(t, title, id) => {
+            Update::Tracks(t, title, id, context) => {
                 self.tracks = t;
                 self.title = title;
                 self.playlist = id;
+                self.context = context;
                 self.track_state.select(Some(0));
                 self.focus = Panel::Tracks;
             }
@@ -426,7 +438,11 @@ impl Ui {
                 .playlists
                 .get(self.playlist_state.selected().unwrap_or(0))
                 .map(|p| Command::Load(p.id.clone(), p.name.clone())),
-            "play" => self.selected_track().map(Command::Play),
+            "play" => self.selected_track().map(|uri| Command::PlayFrom {
+                context: self.context.clone(),
+                uris: self.tracks.iter().map(|t| t.uri.clone()).collect(),
+                uri,
+            }),
             "toggle" => Some(Command::Toggle),
             "next" => Some(Command::Next),
             "previous" => Some(Command::Previous),
@@ -1090,6 +1106,10 @@ fn centered(area: Rect) -> Rect {
 fn emit(tx: &mpsc::UnboundedSender<Update>, update: Update) {
     let _ = tx.send(update);
 }
+/// Playlist IDs arrive both bare (from the playlist list) and as URIs (from pins).
+fn playlist_uri(id: &str) -> Result<String> {
+    Ok(format!("spotify:playlist:{}", spotify_id(id, "playlist")?))
+}
 async fn execute(
     command: Command,
     api: &mut Api,
@@ -1126,29 +1146,35 @@ async fn execute(
         }
         Command::Load(id, name) => {
             let tracks = api.playlist_tracks(&id).await?;
-            emit(tx, Update::Tracks(tracks, name, Some(id)));
+            let context = playlist_uri(&id)?;
+            emit(tx, Update::Tracks(tracks, name, Some(id), Some(context)));
         }
         Command::Search(q) => {
             let tracks = api.search_tracks(&q).await?;
             let title = format!("Search: {q} ({} results, up to 50)", tracks.len());
-            emit(tx, Update::Tracks(tracks, title, None));
+            emit(tx, Update::Tracks(tracks, title, None, None));
         }
         Command::Recent => emit(
             tx,
-            Update::Tracks(api.recent().await?, "Recently played".into(), None),
+            Update::Tracks(api.recent().await?, "Recently played".into(), None, None),
         ),
         Command::Album(album) => {
             let tracks = api.album_tracks(&album).await?;
             emit(
                 tx,
-                Update::Tracks(tracks, format!("Album: {}", album.name), None),
+                Update::Tracks(
+                    tracks,
+                    format!("Album: {}", album.name),
+                    None,
+                    Some(album.uri),
+                ),
             );
         }
         Command::Artist(artist) => {
             let tracks = api.artist_tracks(&artist).await?;
             emit(
                 tx,
-                Update::Tracks(tracks, format!("Artist: {}", artist.name), None),
+                Update::Tracks(tracks, format!("Artist: {}", artist.name), None, None),
             );
         }
         Command::Devices => emit(tx, Update::Devices(api.devices().await?)),
@@ -1162,6 +1188,9 @@ async fn execute(
         Command::Next => api.next().await?,
         Command::Previous => api.previous().await?,
         Command::Play(uri) => api.play(Some(&uri)).await?,
+        Command::PlayFrom { context, uris, uri } => {
+            api.play_from(context.as_deref(), &uris, &uri).await?
+        }
         Command::Transfer(id) => api.transfer(&id).await?,
         Command::Volume(delta) => {
             let current = api
@@ -1243,7 +1272,8 @@ async fn execute(
                 Update::Tracks(
                     api.playlist_tracks(&playlist).await?,
                     "Playlist".into(),
-                    Some(playlist),
+                    Some(playlist.clone()),
+                    Some(playlist_uri(&playlist)?),
                 ),
             );
             emit(tx, Update::Message("Removed from playlist".into(), false));
@@ -1521,6 +1551,27 @@ mod tests {
         assert!(
             matches!(rx.try_recv().unwrap(), Command::Artist(a) if a.uri == "spotify:artist:b")
         );
+    }
+    #[test]
+    fn playing_a_loaded_track_continues_through_the_list() {
+        let mut ui = Ui::new(Config::default());
+        let (tx, mut rx) = mpsc::channel(1);
+        let tracks = ["spotify:track:1", "spotify:track:2"].map(|uri| Track {
+            uri: uri.into(),
+            ..Default::default()
+        });
+        ui.update(Update::Tracks(
+            tracks.to_vec(),
+            "Album".into(),
+            None,
+            Some("spotify:album:a".into()),
+        ));
+        ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Command::PlayFrom { context: Some(c), uris, uri }
+                if c == "spotify:album:a" && uris.len() == 2 && uri == "spotify:track:1"
+        ));
     }
     #[test]
     fn fuzzy_subsequence() {

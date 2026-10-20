@@ -77,7 +77,7 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | Shift+R | Cycle repeat mode (off / all / one) |
 | Shift+P | Pin/unpin selected song or playlist |
 | j / k or arrows | Move selection |
-| Enter | Open playlist / play selected track |
+| Enter | Open playlist / play selected track, continuing through the rest of the album, playlist, or list |
 | Tab | Switch panel |
 | / | Search tracks |
 | Ctrl+P | Fuzzy picker for playlists and currently loaded tracks |

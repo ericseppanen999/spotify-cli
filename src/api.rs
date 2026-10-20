@@ -239,6 +239,22 @@ impl Api {
             .await?;
         Ok(())
     }
+    /// Starts at `uri` and continues from there: through `context` (an album
+    /// or playlist URI) if given, otherwise through `uris` in order.
+    pub async fn play_from(
+        &mut self,
+        context: Option<&str>,
+        uris: &[String],
+        uri: &str,
+    ) -> Result<()> {
+        let body = match context {
+            Some(context) => json!({"context_uri": context, "offset": {"uri": uri}}),
+            None => json!({"uris": uris, "offset": {"uri": uri}}),
+        };
+        self.request(Method::PUT, "/me/player/play", &[], Some(body))
+            .await?;
+        Ok(())
+    }
     pub async fn pause(&mut self) -> Result<()> {
         self.request(Method::PUT, "/me/player/pause", &[], None)
             .await?;
