@@ -85,6 +85,8 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | m | Add the currently playing song to this week's New Music playlist |
 | c | Create a new playlist |
 | l | Like selected track (current track if no selection) |
+| v | View the playing song's album |
+| V | View the playing artist's songs (best-matching search results, up to 50) |
 | d | Device picker |
 | t | Choose a color theme |
 | + / - | Volume |

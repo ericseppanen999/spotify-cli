@@ -349,6 +349,33 @@ impl Api {
         }
         Ok(items)
     }
+    /// Album track listings omit the album itself, so it's filled back in
+    /// for the cover art and anything else that reads `track.album`.
+    pub async fn album_tracks(&mut self, album: &Album) -> Result<Vec<Track>> {
+        let mut tracks: Vec<Track> = self
+            .pages(&format!(
+                "/albums/{}/tracks",
+                spotify_id(&album.uri, "album")?
+            ))
+            .await?;
+        for track in &mut tracks {
+            track.album = album.clone();
+        }
+        Ok(tracks)
+    }
+    /// The artist's most relevant songs, via search rather than the
+    /// top-tracks endpoint, which Development Mode apps can't use. Search
+    /// matches names loosely, so results are kept only if they credit this
+    /// exact artist.
+    pub async fn artist_tracks(&mut self, artist: &Artist) -> Result<Vec<Track>> {
+        let query = format!("artist:\"{}\"", artist.name.replace('"', ""));
+        Ok(self
+            .search_tracks(&query)
+            .await?
+            .into_iter()
+            .filter(|t| t.artists.iter().any(|a| a.uri == artist.uri))
+            .collect())
+    }
     pub async fn recent(&mut self) -> Result<Vec<Track>> {
         let page: Page<TrackItem> = self
             .get("/me/player/recently-played", &[("limit", "50")])

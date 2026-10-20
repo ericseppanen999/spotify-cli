@@ -1,5 +1,5 @@
 use crate::{
-    api::{Api, CoverPixels, Device, Playback, Playlist, Track},
+    api::{Album, Api, Artist, CoverPixels, Device, Playback, Playlist, Track},
     config::{Config, Pin, PinKind, Theme},
     newmusic, webplayer,
 };
@@ -37,6 +37,8 @@ const BINDINGS: &[(&str, &str, &str)] = &[
         "Add playing song to this week's New Music",
     ),
     ("l", "like", "Like selected track"),
+    ("v", "view_album", "View playing song's album"),
+    ("V", "view_artist", "View playing artist's songs"),
     ("d", "devices", "Choose device"),
     ("t", "theme", "Choose color theme"),
     ("c", "create", "Create new playlist"),
@@ -61,6 +63,8 @@ enum Command {
     Load(String, String),
     Search(String),
     Recent,
+    Album(Album),
+    Artist(Artist),
     Toggle,
     Next,
     Previous,
@@ -486,6 +490,14 @@ impl Ui {
             "webplayer" => Some(Command::WebPlayer),
             "newmusic" => Some(Command::Newmusic),
             "recent" => Some(Command::Recent),
+            "view_album" | "view_artist" => match &self.playback.item {
+                Some(track) if action == "view_album" => Some(Command::Album(track.album.clone())),
+                Some(track) => track.artists.first().cloned().map(Command::Artist),
+                None => {
+                    self.notice("Nothing is playing".into(), true);
+                    None
+                }
+            },
             _ => None,
         };
         if let Some(c) = command {
@@ -1125,6 +1137,20 @@ async fn execute(
             tx,
             Update::Tracks(api.recent().await?, "Recently played".into(), None),
         ),
+        Command::Album(album) => {
+            let tracks = api.album_tracks(&album).await?;
+            emit(
+                tx,
+                Update::Tracks(tracks, format!("Album: {}", album.name), None),
+            );
+        }
+        Command::Artist(artist) => {
+            let tracks = api.artist_tracks(&artist).await?;
+            emit(
+                tx,
+                Update::Tracks(tracks, format!("Artist: {}", artist.name), None),
+            );
+        }
         Command::Devices => emit(tx, Update::Devices(api.devices().await?)),
         Command::Toggle => {
             if api.playback().await?.is_playing {
@@ -1470,6 +1496,30 @@ mod tests {
         ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
         assert!(
             matches!(rx.try_recv().unwrap(), Command::Load(uri, _) if uri == "spotify:playlist:pinned")
+        );
+    }
+    #[test]
+    fn view_album_and_artist_use_the_playing_song() {
+        let mut ui = Ui::new(Config::default());
+        let (tx, mut rx) = mpsc::channel(1);
+        ui.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), &tx);
+        assert!(rx.try_recv().is_err());
+        ui.playback.item = Some(Track {
+            album: Album {
+                uri: "spotify:album:a".into(),
+                ..Default::default()
+            },
+            artists: vec![Artist {
+                uri: "spotify:artist:b".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        ui.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), &tx);
+        assert!(matches!(rx.try_recv().unwrap(), Command::Album(a) if a.uri == "spotify:album:a"));
+        ui.key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT), &tx);
+        assert!(
+            matches!(rx.try_recv().unwrap(), Command::Artist(a) if a.uri == "spotify:artist:b")
         );
     }
     #[test]
