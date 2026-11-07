@@ -6,11 +6,47 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+/// Treats an explicit JSON `null` like a missing field. Local files in
+/// playlists come back with `"uri": null` on their artists and album, which
+/// `#[serde(default)]` alone rejects.
+fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// A 403 from Spotify, kept typed so callers can react to it.
+#[derive(Debug)]
+pub struct Denied(pub String);
+impl std::fmt::Display for Denied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Spotify denied access: {}. Check Premium, app allowlist, and login scopes",
+            self.0
+        )
+    }
+}
+impl std::error::Error for Denied {}
+
+/// Spotify only lets apps list the songs of playlists the user owns or
+/// collaborates on; anyone else's playlist answers 403.
+#[derive(Debug)]
+pub struct NotYourPlaylist;
+impl std::fmt::Display for NotYourPlaylist {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Spotify only lets apps list songs in playlists you own or collaborate on")
+    }
+}
+impl std::error::Error for NotYourPlaylist {}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Artist {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub uri: String,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -20,11 +56,11 @@ pub struct Image {
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Album {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub uri: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub images: Vec<Image>,
 }
 impl Album {
@@ -39,15 +75,15 @@ impl Album {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Track {
     pub id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub uri: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub artists: Vec<Artist>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub album: Album,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub duration_ms: u64,
 }
 impl Track {
@@ -185,7 +221,7 @@ impl Api {
                     .unwrap_or("Request failed");
                 match status.as_u16() {
                     401 => bail!("Spotify session expired; run spot login"),
-                    403 => bail!("Spotify denied access: {message}. Check Premium, app allowlist, and login scopes"),
+                    403 => return Err(Denied(message.to_string()).into()),
                     404 if path.starts_with("/me/player") => bail!("No active playback device. Open Spotify on a device, then use spot devices and spot transfer"),
                     _ => bail!("Spotify {status}: {message}"),
                 }
@@ -416,7 +452,14 @@ impl Api {
     pub async fn playlist_tracks(&mut self, id: &str) -> Result<Vec<Track>> {
         let items: Vec<TrackItem> = self
             .pages(&format!("/playlists/{}/items", spotify_id(id, "playlist")?))
-            .await?;
+            .await
+            .map_err(|e| {
+                if e.is::<Denied>() {
+                    NotYourPlaylist.into()
+                } else {
+                    e
+                }
+            })?;
         Ok(items.into_iter().filter_map(|t| t.item).collect())
     }
     pub async fn create_playlist(&mut self, name: &str, description: &str) -> Result<Playlist> {
@@ -683,6 +726,38 @@ mod tests {
         let tracks = a.playlist_tracks(ID).await.unwrap();
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[1].name, "Second");
+    }
+    #[tokio::test]
+    async fn playlist_with_local_files_loads() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(path(format!("/playlists/{ID}/items")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[{"item":{
+                "id": null, "is_local": true, "name": "Demo", "duration_ms": 1000,
+                "uri": "spotify:local:Band:Tape:Demo:1",
+                "artists": [{"id": null, "name": "Band", "uri": null}],
+                "album": {"id": null, "name": "Tape", "uri": null, "images": []}
+            }}],"next":null})))
+            .mount(&s)
+            .await;
+        let tracks = a.playlist_tracks(ID).await.unwrap();
+        assert_eq!(tracks[0].label(), "Demo — Band");
+    }
+    #[tokio::test]
+    async fn someone_elses_playlist_is_reported_as_such() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(path(format!("/playlists/{ID}/items")))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"error":{"status":403,"message":"Forbidden"}})),
+            )
+            .mount(&s)
+            .await;
+        let e = a.playlist_tracks(ID).await.unwrap_err();
+        assert!(e.is::<NotYourPlaylist>());
     }
     #[tokio::test]
     async fn whitespace_only_body_is_treated_as_no_content() {

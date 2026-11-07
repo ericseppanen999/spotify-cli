@@ -1355,9 +1355,23 @@ async fn execute(
             emit(tx, Update::Playlists(api.playlists().await?));
         }
         Command::Load(id, name) => {
-            let tracks = api.playlist_tracks(&id).await?;
             let context = playlist_uri(&id)?;
-            emit(tx, Update::Tracks(tracks, name, Some(id), Some(context)));
+            match api.playlist_tracks(&id).await {
+                Ok(tracks) => emit(tx, Update::Tracks(tracks, name, Some(id), Some(context))),
+                // Someone else's playlist: its songs can't be listed, but it
+                // can still be played as a whole.
+                Err(e) if e.is::<crate::api::NotYourPlaylist>() => {
+                    api.play(Some(&context)).await?;
+                    emit(
+                        tx,
+                        Update::Message(
+                            format!("Playing {name} (Spotify won't list songs in playlists you don't own)"),
+                            false,
+                        ),
+                    );
+                }
+                Err(e) => return Err(e),
+            }
         }
         Command::Search(q) => {
             let tracks = api.search_tracks(&q).await?;
