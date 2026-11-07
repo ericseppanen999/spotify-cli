@@ -733,12 +733,14 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut a = api(&s, d.path());
         Mock::given(path(format!("/playlists/{ID}/items")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[{"item":{
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"items":[{"item":{
                 "id": null, "is_local": true, "name": "Demo", "duration_ms": 1000,
                 "uri": "spotify:local:Band:Tape:Demo:1",
                 "artists": [{"id": null, "name": "Band", "uri": null}],
                 "album": {"id": null, "name": "Tape", "uri": null, "images": []}
-            }}],"next":null})))
+            }}],"next":null})),
+            )
             .mount(&s)
             .await;
         let tracks = a.playlist_tracks(ID).await.unwrap();
