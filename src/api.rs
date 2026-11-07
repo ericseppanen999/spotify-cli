@@ -17,19 +17,40 @@ where
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
-/// A 403 from Spotify, kept typed so callers can react to it.
-#[derive(Debug)]
-pub struct Denied(pub String);
-impl std::fmt::Display for Denied {
+/// Spotify failures callers may want to react to, rather than just show.
+/// Check with `error.downcast_ref::<ApiError>()`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ApiError {
+    /// 404 from a `/me/player` endpoint: nothing to send playback to.
+    NoDevice,
+    /// 429, or a request made before the previous 429's delay ran out.
+    RateLimited { seconds: u64 },
+    /// 401 that a token refresh didn't fix.
+    SessionExpired,
+    /// 403, with Spotify's message.
+    Denied(String),
+}
+impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Spotify denied access: {}. Check Premium, app allowlist, and login scopes",
-            self.0
-        )
+        match self {
+            Self::NoDevice => f.write_str(
+                "No active playback device. Open Spotify on a device, then use spot devices and spot transfer",
+            ),
+            Self::RateLimited { seconds } => {
+                write!(f, "Spotify rate limit: retry in {seconds} seconds")
+            }
+            Self::SessionExpired => f.write_str("Spotify session expired; run spot login"),
+            Self::Denied(message) => write!(
+                f,
+                "Spotify denied access: {message}. Check Premium, app allowlist, and login scopes"
+            ),
+        }
     }
 }
-impl std::error::Error for Denied {}
+impl std::error::Error for ApiError {}
+fn is_denied(e: &anyhow::Error) -> bool {
+    matches!(e.downcast_ref(), Some(ApiError::Denied(_)))
+}
 
 /// Spotify only lets apps list the songs of playlists the user owns or
 /// collaborates on; anyone else's playlist answers 403.
@@ -85,6 +106,10 @@ pub struct Track {
     pub album: Album,
     #[serde(default, deserialize_with = "null_default")]
     pub duration_ms: u64,
+    /// A file from the owner's computer added to a playlist. Spotify lists
+    /// these but won't play them through the Web API.
+    #[serde(default, deserialize_with = "null_default")]
+    pub is_local: bool,
 }
 impl Track {
     pub fn label(&self) -> String {
@@ -103,8 +128,25 @@ impl Track {
 pub struct Playlist {
     pub id: String,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub description: String,
+    #[serde(default, deserialize_with = "null_default")]
+    pub owner: Owner,
+    #[serde(default, deserialize_with = "null_default")]
+    pub collaborative: bool,
+}
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Owner {
+    #[serde(default, deserialize_with = "null_default")]
+    pub id: String,
+}
+impl Playlist {
+    /// Whether `user` can list and edit this playlist's songs. Spotify only
+    /// allows that for playlists they own or collaborate on. Unknown users
+    /// (the profile couldn't be read) get the benefit of the doubt.
+    pub fn editable_by(&self, user: Option<&str>) -> bool {
+        self.collaborative || user.is_none_or(|u| u == self.owner.id)
+    }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Device {
@@ -166,10 +208,10 @@ impl Api {
     ) -> Result<Value> {
         if let Some(deadline) = self.retry_at {
             if deadline > Instant::now() {
-                bail!(
-                    "Spotify rate limit: retry in {} seconds",
-                    deadline.duration_since(Instant::now()).as_secs() + 1
-                );
+                return Err(ApiError::RateLimited {
+                    seconds: deadline.duration_since(Instant::now()).as_secs() + 1,
+                }
+                .into());
             }
         }
         if self.auth.tokens.expires_at <= Utc::now().timestamp() + 30 {
@@ -207,7 +249,7 @@ impl Api {
                     .unwrap_or(30)
                     .min(86400);
                 self.retry_at = Some(Instant::now() + Duration::from_secs(seconds));
-                bail!("Spotify rate limit: retry in {seconds} seconds");
+                return Err(ApiError::RateLimited { seconds }.into());
             }
             if status.as_u16() == 204 {
                 return Ok(Value::Null);
@@ -220,9 +262,9 @@ impl Api {
                     .and_then(Value::as_str)
                     .unwrap_or("Request failed");
                 match status.as_u16() {
-                    401 => bail!("Spotify session expired; run spot login"),
-                    403 => return Err(Denied(message.to_string()).into()),
-                    404 if path.starts_with("/me/player") => bail!("No active playback device. Open Spotify on a device, then use spot devices and spot transfer"),
+                    401 => return Err(ApiError::SessionExpired.into()),
+                    403 => return Err(ApiError::Denied(message.to_string()).into()),
+                    404 if path.starts_with("/me/player") => return Err(ApiError::NoDevice.into()),
                     _ => bail!("Spotify {status}: {message}"),
                 }
             }
@@ -454,13 +496,66 @@ impl Api {
             .pages(&format!("/playlists/{}/items", spotify_id(id, "playlist")?))
             .await
             .map_err(|e| {
-                if e.is::<Denied>() {
+                if is_denied(&e) {
                     NotYourPlaylist.into()
                 } else {
                     e
                 }
             })?;
         Ok(items.into_iter().filter_map(|t| t.item).collect())
+    }
+    /// The logged-in user's Spotify ID.
+    pub async fn me(&mut self) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Me {
+            id: String,
+        }
+        Ok(self.get::<Me>("/me", &[]).await?.id)
+    }
+    /// Liked Songs, newest first.
+    pub async fn liked(&mut self) -> Result<Vec<Track>> {
+        let items: Vec<TrackItem> = self.pages("/me/tracks").await.map_err(|e| {
+            if is_denied(&e) {
+                anyhow::anyhow!(
+                    "Spotify denied reading Liked Songs. Run spot login again to grant library access"
+                )
+            } else {
+                e
+            }
+        })?;
+        Ok(items.into_iter().filter_map(|t| t.item).collect())
+    }
+    /// Albums matching `query`, up to 50, each with its artists' names.
+    pub async fn search_albums(&mut self, query: &str) -> Result<Vec<(Album, String)>> {
+        #[derive(Deserialize)]
+        struct Found {
+            #[serde(flatten)]
+            album: Album,
+            #[serde(default)]
+            artists: Vec<Artist>,
+        }
+        self.search_results(query, "album", 0, 50)
+            .await?
+            .into_iter()
+            .map(|item| {
+                let found: Found = serde_json::from_value(item)?;
+                let artists = found
+                    .artists
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok((found.album, artists))
+            })
+            .collect()
+    }
+    /// Artists matching `query`, up to 50.
+    pub async fn search_artists(&mut self, query: &str) -> Result<Vec<Artist>> {
+        self.search_results(query, "artist", 0, 50)
+            .await?
+            .into_iter()
+            .map(|item| Ok(serde_json::from_value(item)?))
+            .collect()
     }
     pub async fn create_playlist(&mut self, name: &str, description: &str) -> Result<Playlist> {
         anyhow::ensure!(!name.trim().is_empty(), "Playlist name cannot be empty");
@@ -589,6 +684,24 @@ pub fn track_uri(input: &str) -> Result<String> {
     Ok(format!("spotify:track:{}", spotify_id(input, "track")?))
 }
 
+/// An `Api` aimed at a mock server at `base`, with a fresh token stored in `dir`.
+#[cfg(test)]
+pub(crate) fn test_api(base: &str, dir: &std::path::Path) -> Api {
+    let auth = Auth {
+        client_id: "test".into(),
+        token_url: format!("{base}/token"),
+        path: dir.join("tokens.json"),
+        tokens: crate::auth::Tokens {
+            access_token: "old".into(),
+            refresh_token: "refresh".into(),
+            expires_at: Utc::now().timestamp() + 3600,
+        },
+    };
+    let mut api = Api::new(auth).unwrap();
+    api.base = base.to_string();
+    api
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,19 +712,7 @@ mod tests {
     };
     const ID: &str = "0123456789abcdefghijkl";
     fn api(server: &MockServer, dir: &std::path::Path) -> Api {
-        let auth = Auth {
-            client_id: "test".into(),
-            token_url: format!("{}/token", server.uri()),
-            path: dir.join("tokens.json"),
-            tokens: Tokens {
-                access_token: "old".into(),
-                refresh_token: "refresh".into(),
-                expires_at: Utc::now().timestamp() + 3600,
-            },
-        };
-        let mut api = Api::new(auth).unwrap();
-        api.base = server.uri();
-        api
+        test_api(&server.uri(), dir)
     }
     #[tokio::test]
     async fn no_playback_and_no_device() {
@@ -635,6 +736,41 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("No active playback device"));
+        let e = a.play(None).await.unwrap_err();
+        assert_eq!(e.downcast_ref(), Some(&ApiError::NoDevice));
+    }
+    #[tokio::test]
+    async fn failures_callers_react_to_are_typed() {
+        let s = MockServer::start().await;
+        let d = tempfile::tempdir().unwrap();
+        let mut a = api(&s, d.path());
+        Mock::given(path("/me/player/next"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "7"))
+            .mount(&s)
+            .await;
+        Mock::given(path("/me/player/pause"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"error":{"status":403,"message":"Premium required"}})),
+            )
+            .mount(&s)
+            .await;
+        let e = a.pause().await.unwrap_err();
+        assert_eq!(
+            e.downcast_ref(),
+            Some(&ApiError::Denied("Premium required".into()))
+        );
+        let e = a.next().await.unwrap_err();
+        assert_eq!(
+            e.downcast_ref(),
+            Some(&ApiError::RateLimited { seconds: 7 })
+        );
+        // Later requests are held back, with the same typed error.
+        let e = a.pause().await.unwrap_err();
+        assert!(matches!(
+            e.downcast_ref(),
+            Some(ApiError::RateLimited { .. })
+        ));
     }
     #[tokio::test]
     async fn rate_limit_does_not_repeat_mutation() {

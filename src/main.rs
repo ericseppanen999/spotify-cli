@@ -47,6 +47,8 @@ enum Command {
         limit: u8,
     },
     Recent,
+    /// List your Liked Songs, newest first
+    Liked,
     /// List playlists, or the tracks in a playlist
     Playlists {
         playlist: Option<String>,
@@ -224,6 +226,7 @@ async fn run() -> Result<()> {
             }
         }
         Command::Recent => print_tracks(api.recent().await?),
+        Command::Liked => print_tracks(api.liked().await?),
         Command::Playlists { playlist: Some(id) } => print_tracks(api.playlist_tracks(&id).await?),
         Command::Playlists { playlist: None } => {
             for p in api.playlists().await? {

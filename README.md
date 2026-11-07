@@ -49,6 +49,7 @@ spot search "Mezzanine" --kind album
 spot search "Massive Attack" --kind artist --limit 100
 spot search "Massive Attack" --offset 50
 spot recent
+spot liked
 spot playlists
 spot playlists PLAYLIST_ID
 spot playlist new "Evening music"
@@ -79,7 +80,7 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | j / k or arrows | Move selection |
 | Enter | Open playlist / play selected track, continuing through the rest of the album, playlist, or list |
 | Tab | Switch panel |
-| / | Search tracks |
+| / | Search tracks; Tab in the search box switches to albums or artists |
 | Ctrl+P | Fuzzy picker for playlists and currently loaded tracks |
 | a | Choose a destination playlist, or add to this week's diary |
 | m | Add the currently playing song to this week's New Music playlist |
@@ -94,6 +95,7 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | + / - | Volume |
 | N | Toggle new music mode |
 | r | Recently played |
+| L | Liked Songs |
 | z | Listening mode (also enters automatically after 60 seconds idle) |
 | x | Remove track from viewed playlist (type `yes` to confirm), or from Up Next |
 | w | Launch the local web player (see below) |
@@ -101,7 +103,11 @@ The left sidebar has **Pins** above **Playlists**. Select a song or playlist and
 | Esc | Close popup |
 | q / Ctrl+C | Quit |
 
-Type to filter pickers; use arrows and Enter to select. Removing a track removes all occurrences of that URI from the playlist. Spotify permits editing only playlists you own or collaborate on. In current Development Mode, reading playlist contents is also limited to those playlists.
+Type to filter pickers; use arrows and Enter to select. Removing a track removes all occurrences of that URI from the playlist. Spotify permits editing only playlists you own or collaborate on. In current Development Mode, reading playlist contents is also limited to those playlists. Other people's playlists you follow are marked **(play only)**: Enter plays them from the top instead of listing their songs, and they're left out of the add-to-playlist picker.
+
+Album and artist searches open a picker; Enter shows that album's songs or the artist's best-matching songs. Local files in your playlists are listed, dimmed, but Spotify's API can't play or edit them; playing through the list skips them. If a command needs a device and none is active, the device picker opens.
+
+Liked Songs (`L`, `spot liked`) needs library read access. If you logged in before this was added, run `spot login` again.
 
 After 60 seconds without keyboard input, listening mode displays a centered title, artist, and live progress bar. Any key returns to your previous view; that first key only wakes the interface, so it won't skip a track, pause, or quit. Playback continues updating while this view is shown. Press `z` to enter it immediately.
 
@@ -154,6 +160,6 @@ Tests use local mock HTTP servers and do not need Spotify credentials. CI runs t
 
 Regenerate the illustrative screenshot with `cargo run --example preview`. On machines with limited memory, add `-j 1` to Cargo build/test commands.
 
-The optional album-art color effect, native terminal audio through spotifyd, and a web player are not included.
+The optional album-art color effect and native terminal audio through spotifyd are not included; for audio on this computer, use the local web player (`w`).
 
 API compatibility follows Spotify's [2026 migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide): playlist `/items`, creation through `/me/playlists`, and saves through `/me/library`.

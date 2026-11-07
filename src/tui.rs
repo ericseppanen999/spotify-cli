@@ -1,5 +1,8 @@
 use crate::{
-    api::{spotify_id, Album, Api, Artist, CoverPixels, Device, Playback, Playlist, Track},
+    api::{
+        spotify_id, Album, Api, ApiError, Artist, CoverPixels, Device, NotYourPlaylist, Playback,
+        Playlist, Track,
+    },
     config::{Config, Pin, PinKind, Theme},
     daemon::{self, Request},
     newmusic,
@@ -60,6 +63,7 @@ const BINDINGS: &[(&str, &str, &str)] = &[
     ),
     ("x", "remove", "Remove selected track"),
     ("r", "recent", "Recently played"),
+    ("L", "liked", "Liked Songs"),
     ("z", "listening", "Listening mode (also after 60s idle)"),
     ("?", "help", "Help"),
     ("q", "quit", "Quit"),
@@ -90,6 +94,7 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
             "search",
             "picker",
             "recent",
+            "liked",
             "view_album",
             "view_artist",
         ],
@@ -109,11 +114,35 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
     ),
     ("App", &["listening", "theme", "help", "quit"]),
 ];
+/// What the search popup looks for; Tab cycles through these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchKind {
+    Tracks,
+    Albums,
+    Artists,
+}
+impl SearchKind {
+    fn next(self) -> Self {
+        match self {
+            Self::Tracks => Self::Albums,
+            Self::Albums => Self::Artists,
+            Self::Artists => Self::Tracks,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tracks => "tracks",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+        }
+    }
+}
 #[derive(Clone)]
 enum Command {
     Load(String, String),
-    Search(String),
+    Search(String, SearchKind),
     Recent,
+    Liked,
     Album(Album),
     Artist(Artist),
     Toggle,
@@ -161,6 +190,10 @@ enum Update {
     Cover(Option<CoverPixels>),
     Queue(Box<Queue>),
     Upcoming(Vec<Track>),
+    /// The logged-in user's ID, for telling which playlists are theirs.
+    User(String),
+    /// Album or artist search hits, shown in a picker.
+    Results(String, Vec<(String, Command)>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Panel {
@@ -171,7 +204,9 @@ enum Panel {
 }
 enum Popup {
     Help,
-    Search,
+    Search(SearchKind),
+    /// A title and the choices to pick from.
+    Results(String, Vec<(String, Command)>),
     Picker,
     Add(String),
     Devices,
@@ -206,6 +241,7 @@ struct Ui {
     last_activity: Instant,
     listening: bool,
     cover: Option<CoverPixels>,
+    user: Option<String>,
 }
 impl Ui {
     fn new(config: Config) -> Self {
@@ -240,6 +276,7 @@ impl Ui {
             last_activity: Instant::now(),
             listening: false,
             cover: None,
+            user: None,
         }
     }
     fn notice(&mut self, message: String, error: bool) {
@@ -281,6 +318,8 @@ impl Ui {
                 );
             }
             Update::Upcoming(upcoming) => self.queue.upcoming = upcoming,
+            Update::User(id) => self.user = Some(id),
+            Update::Results(title, choices) => self.open(Popup::Results(title, choices)),
             Update::Pins(pins) => {
                 self.config.pins = pins;
                 self.pin_state.select(if self.config.pins.is_empty() {
@@ -316,6 +355,13 @@ impl Ui {
                 .map(|t| t.uri.clone()),
             Panel::Queue => self.selected_queued().map(|(_, t)| t.uri.clone()),
         }
+    }
+    /// The Tracks panel's selected song, when it's a local file.
+    fn selected_local(&self) -> Option<&Track> {
+        (self.focus == Panel::Tracks)
+            .then(|| self.tracks.get(self.track_state.selected().unwrap_or(0)))
+            .flatten()
+            .filter(|t| t.is_local)
     }
     fn selected_queued(&self) -> Option<(usize, &Track)> {
         let index = self.queue_state.selected()?;
@@ -359,9 +405,12 @@ impl Ui {
                         .map(|id| (d.name.clone(), Command::Transfer(id.clone())))
                 })
                 .collect(),
+            Some(Popup::Results(_, choices)) => choices.clone(),
+            // Adding to someone else's playlist would only fail.
             Some(Popup::Add(track)) => self
                 .playlists
                 .iter()
+                .filter(|p| p.editable_by(self.user.as_deref()))
                 .map(|p| {
                     (
                         p.name.clone(),
@@ -407,10 +456,15 @@ impl Ui {
         if self.popup.is_some() {
             match key.code {
                 KeyCode::Esc => self.popup = None,
+                KeyCode::Tab => {
+                    if let Some(Popup::Search(kind)) = &mut self.popup {
+                        *kind = kind.next();
+                    }
+                }
                 KeyCode::Enter => {
                     let command = match &self.popup {
-                        Some(Popup::Search) if !self.input.trim().is_empty() => {
-                            Some(Command::Search(self.input.clone()))
+                        Some(Popup::Search(kind)) if !self.input.trim().is_empty() => {
+                            Some(Command::Search(self.input.clone(), *kind))
                         }
                         Some(Popup::NewPlaylist) if !self.input.trim().is_empty() => {
                             Some(Command::NewPlaylist(self.input.trim().to_string()))
@@ -418,7 +472,13 @@ impl Ui {
                         Some(Popup::Remove(track, playlist)) if self.input == "yes" => {
                             Some(Command::Remove(track.clone(), playlist.clone()))
                         }
-                        Some(Popup::Picker | Popup::Add(_) | Popup::Devices | Popup::Theme) => self
+                        Some(
+                            Popup::Picker
+                            | Popup::Add(_)
+                            | Popup::Devices
+                            | Popup::Theme
+                            | Popup::Results(..),
+                        ) => self
                             .choices()
                             .get(self.popup_state.selected().unwrap_or(0))
                             .map(|(_, c)| c.clone()),
@@ -478,6 +538,19 @@ impl Ui {
             })
             .unwrap_or("")
             .to_string();
+        if matches!(
+            action.as_str(),
+            "play" | "queue" | "like" | "add" | "remove"
+        ) {
+            if let Some(track) = self.selected_local() {
+                let name = track.name.clone();
+                self.notice(
+                    format!("{name} is a local file; Spotify's API can't play or edit those"),
+                    true,
+                );
+                return false;
+            }
+        }
         let command = match action.as_str() {
             "listening" => {
                 self.listening = true;
@@ -552,14 +625,20 @@ impl Ui {
                 .map(|p| Command::Load(p.id.clone(), p.name.clone())),
             "play" => self.selected_track().map(|uri| Command::PlayFrom {
                 context: self.context.clone(),
-                uris: self.tracks.iter().map(|t| t.uri.clone()).collect(),
+                // Spotify rejects local files in a list of URIs to play.
+                uris: self
+                    .tracks
+                    .iter()
+                    .filter(|t| !t.is_local)
+                    .map(|t| t.uri.clone())
+                    .collect(),
                 uri,
             }),
             "toggle" => Some(Command::Toggle),
             "next" => Some(Command::Next),
             "previous" => Some(Command::Previous),
             "search" => {
-                self.open(Popup::Search);
+                self.open(Popup::Search(SearchKind::Tracks));
                 None
             }
             "picker" => {
@@ -618,6 +697,7 @@ impl Ui {
             "webplayer" => Some(Command::WebPlayer),
             "newmusic" => Some(Command::Newmusic),
             "recent" => Some(Command::Recent),
+            "liked" => Some(Command::Liked),
             "view_album" | "view_artist" => match &self.playback.item {
                 Some(track) if action == "view_album" => Some(Command::Album(track.album.clone())),
                 Some(track) => track.artists.first().cloned().map(Command::Artist),
@@ -766,7 +846,14 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
     let playlists = List::new(
         ui.playlists
             .iter()
-            .map(|p| ListItem::new(p.name.clone()))
+            .map(|p| {
+                if p.editable_by(ui.user.as_deref()) {
+                    ListItem::new(p.name.clone())
+                } else {
+                    // Enter plays these instead of listing them.
+                    ListItem::new(format!("{} (play only)", p.name)).style(Style::default().fg(dim))
+                }
+            })
             .collect::<Vec<_>>(),
     )
     .block(border(" Playlists ".into(), ui.focus == Panel::Playlists))
@@ -804,6 +891,13 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         ui.tracks
             .iter()
             .map(|t| {
+                if t.is_local {
+                    return ListItem::new(vec![
+                        Line::from(format!("{} (local file)", t.label())),
+                        Line::from(format!("  {}", t.album.name)),
+                    ])
+                    .style(Style::default().fg(dim));
+                }
                 ListItem::new(vec![
                     Line::from(t.label()),
                     Line::from(Span::styled(
@@ -995,16 +1089,21 @@ fn draw(frame: &mut Frame, ui: &mut Ui) {
         let area = centered(frame.area());
         frame.render_widget(Clear, area);
         let title = match popup {
-            Popup::Help => " Keyboard shortcuts · Esc closes ",
-            Popup::Search => " Search tracks · Enter searches ",
-            Popup::Picker => " Jump to playlist / loaded track ",
-            Popup::Add(_) => " Add to playlist ",
-            Popup::Devices => " Send playback to device ",
-            Popup::Theme => " Choose a theme ",
-            Popup::NewPlaylist => " Create new playlist · Enter creates ",
-            Popup::Remove(_, _) => " Remove track (all occurrences) · type yes, Enter ",
+            Popup::Help => " Keyboard shortcuts · Esc closes ".into(),
+            Popup::Search(kind) => format!(
+                " Search {} · Tab: {} · Enter searches ",
+                kind.label(),
+                kind.next().label()
+            ),
+            Popup::Results(title, _) => format!(" {title} "),
+            Popup::Picker => " Jump to playlist / loaded track ".into(),
+            Popup::Add(_) => " Add to playlist ".into(),
+            Popup::Devices => " Send playback to device ".into(),
+            Popup::Theme => " Choose a theme ".into(),
+            Popup::NewPlaylist => " Create new playlist · Enter creates ".into(),
+            Popup::Remove(_, _) => " Remove track (all occurrences) · type yes, Enter ".into(),
         };
-        let block = border(title.into(), true);
+        let block = border(title, true);
         let inside = block.inner(area);
         frame.render_widget(block, area);
         if matches!(popup, Popup::Help) {
@@ -1320,6 +1419,52 @@ fn show_queue(tx: &mpsc::UnboundedSender<Update>, reply: daemon::Reply) {
         emit(tx, Update::Message(error, true));
     }
 }
+/// Album/artist hits go to a picker; no hits is just a message.
+fn search_results(query: &str, kind: &str, choices: Vec<(String, Command)>) -> Update {
+    if choices.is_empty() {
+        Update::Message(
+            format!("No {} found for {query}", kind.to_lowercase()),
+            true,
+        )
+    } else {
+        Update::Results(format!("{kind}: {query} · Enter opens"), choices)
+    }
+}
+/// Runs a command, showing any failure. Some failures get more than a
+/// message: with no active device, the device picker opens so playback
+/// can be sent somewhere.
+async fn run_command(
+    command: Command,
+    api: &mut Api,
+    config: &mut Config,
+    dir: &std::path::Path,
+    tx: &mpsc::UnboundedSender<Update>,
+    webplayer_port: &mut Option<u16>,
+) {
+    let Err(e) = execute(command, api, config, dir, tx, webplayer_port).await else {
+        return;
+    };
+    match e.downcast_ref::<ApiError>() {
+        Some(ApiError::NoDevice) => match api.devices().await {
+            Ok(devices) if devices.iter().any(|d| !d.is_restricted && d.id.is_some()) => {
+                emit(tx, Update::Devices(devices));
+                emit(
+                    tx,
+                    Update::Message("No active device: choose where to play".into(), true),
+                );
+            }
+            _ => emit(
+                tx,
+                Update::Message(
+                    "No devices found. Open Spotify on a device, or press w for the web player"
+                        .into(),
+                    true,
+                ),
+            ),
+        },
+        _ => emit(tx, Update::Message(e.to_string(), true)),
+    }
+}
 async fn execute(
     command: Command,
     api: &mut Api,
@@ -1360,7 +1505,7 @@ async fn execute(
                 Ok(tracks) => emit(tx, Update::Tracks(tracks, name, Some(id), Some(context))),
                 // Someone else's playlist: its songs can't be listed, but it
                 // can still be played as a whole.
-                Err(e) if e.is::<crate::api::NotYourPlaylist>() => {
+                Err(e) if e.is::<NotYourPlaylist>() => {
                     api.play(Some(&context)).await?;
                     emit(
                         tx,
@@ -1373,15 +1518,40 @@ async fn execute(
                 Err(e) => return Err(e),
             }
         }
-        Command::Search(q) => {
+        Command::Search(q, SearchKind::Tracks) => {
             let tracks = api.search_tracks(&q).await?;
             let title = format!("Search: {q} ({} results, up to 50)", tracks.len());
             emit(tx, Update::Tracks(tracks, title, None, None));
+        }
+        Command::Search(q, SearchKind::Albums) => {
+            let choices: Vec<_> = api
+                .search_albums(&q)
+                .await?
+                .into_iter()
+                .map(|(album, artists)| {
+                    (format!("{} — {artists}", album.name), Command::Album(album))
+                })
+                .collect();
+            emit(tx, search_results(&q, "Albums", choices));
+        }
+        Command::Search(q, SearchKind::Artists) => {
+            let choices: Vec<_> = api
+                .search_artists(&q)
+                .await?
+                .into_iter()
+                .map(|artist| (artist.name.clone(), Command::Artist(artist)))
+                .collect();
+            emit(tx, search_results(&q, "Artists", choices));
         }
         Command::Recent => emit(
             tx,
             Update::Tracks(api.recent().await?, "Recently played".into(), None, None),
         ),
+        Command::Liked => {
+            let tracks = api.liked().await?;
+            let title = format!("Liked Songs ({})", tracks.len());
+            emit(tx, Update::Tracks(tracks, title, None, None));
+        }
         Command::Album(album) => {
             let tracks = api.album_tracks(&album).await?;
             emit(
@@ -1547,6 +1717,11 @@ async fn worker(
     mut rx: mpsc::Receiver<Command>,
     tx: mpsc::UnboundedSender<Update>,
 ) {
+    // Without the user's ID every playlist is treated as theirs, which
+    // only costs the "(play only)" labels.
+    if let Ok(id) = api.me().await {
+        emit(&tx, Update::User(id));
+    }
     match api.playlists().await {
         Ok(p) => emit(&tx, Update::Playlists(p)),
         Err(e) => emit(&tx, Update::Message(e.to_string(), true)),
@@ -1567,7 +1742,7 @@ async fn worker(
             command = rx.recv() => {
                 let Some(command) = command else { break; };
                 emit(&tx, Update::Busy(true));
-                if let Err(e) = execute(command, &mut api, &mut config, &dir, &tx, &mut webplayer_port).await { emit(&tx, Update::Message(e.to_string(), true)); }
+                run_command(command, &mut api, &mut config, &dir, &tx, &mut webplayer_port).await;
                 emit(&tx, Update::Busy(false));
             }
             _ = poll.tick() => {
@@ -1650,7 +1825,7 @@ pub fn preview() -> Result<ratatui::buffer::Buffer> {
     .map(|(i, name)| Playlist {
         id: i.to_string(),
         name: (*name).into(),
-        description: String::new(),
+        ..Default::default()
     })
     .collect();
     ui.tracks = [
@@ -1730,7 +1905,7 @@ mod tests {
         let mut ui = Ui::new(Config::default());
         let (tx, mut rx) = mpsc::channel(1);
         let started = ui.last_activity;
-        ui.open(Popup::Search);
+        ui.open(Popup::Search(SearchKind::Tracks));
         ui.input = "unfinished search".into();
         ui.tick(started + Duration::from_secs(59));
         assert!(!ui.listening);
@@ -1739,7 +1914,7 @@ mod tests {
         assert!(!ui.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), &tx));
         assert!(!ui.listening);
         assert_eq!(ui.input, "unfinished search");
-        assert!(matches!(ui.popup, Some(Popup::Search)));
+        assert!(matches!(ui.popup, Some(Popup::Search(_))));
         assert!(rx.try_recv().is_err());
         ui.tick(ui.last_activity + Duration::from_secs(59));
         assert!(!ui.listening);
@@ -1863,6 +2038,252 @@ mod tests {
         assert!(matches!(rx.try_recv().unwrap(), Command::Unqueue(1)));
         press(&mut ui, KeyCode::Enter);
         assert!(matches!(rx.try_recv().unwrap(), Command::PlayQueued(1)));
+    }
+    /// Runs `command` through the worker against a mock Spotify server,
+    /// returning everything it sent to the UI.
+    async fn run(server: &wiremock::MockServer, command: Command) -> Vec<Update> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = crate::api::test_api(&server.uri(), dir.path());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut config = Config::default();
+        run_command(command, &mut api, &mut config, dir.path(), &tx, &mut None).await;
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        updates
+    }
+    const PLAYLIST: &str = "0123456789abcdefghijkl";
+    #[tokio::test]
+    async fn someone_elses_playlist_plays_instead_of_failing() {
+        use wiremock::matchers::{body_json, method, path};
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path(format!("/playlists/{PLAYLIST}/items")))
+            .respond_with(wiremock::ResponseTemplate::new(403))
+            .mount(&s)
+            .await;
+        wiremock::Mock::given(method("PUT"))
+            .and(path("/me/player/play"))
+            .and(body_json(
+                serde_json::json!({"context_uri": format!("spotify:playlist:{PLAYLIST}")}),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Load(PLAYLIST.into(), "Theirs".into())).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Message(m, false)] if m.starts_with("Playing Theirs")
+        ));
+    }
+    #[tokio::test]
+    async fn playlist_with_local_files_loads_into_the_track_list() {
+        use wiremock::matchers::path;
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path(format!("/playlists/{PLAYLIST}/items")))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"item": {"id": null, "is_local": true, "name": "Demo",
+                        "uri": "spotify:local:Band:Tape:Demo:1",
+                        "artists": [{"name": "Band", "uri": null}],
+                        "album": {"name": "Tape", "uri": null, "images": []}}}],
+                    "next": null
+                })),
+            )
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Load(PLAYLIST.into(), "Mine".into())).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Tracks(t, title, Some(_), Some(_))] if t[0].is_local && title == "Mine"
+        ));
+    }
+    #[tokio::test]
+    async fn no_active_device_opens_the_device_picker() {
+        use wiremock::matchers::path;
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path("/me/player/play"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        wiremock::Mock::given(path("/me/player/devices"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"devices": [{"id": "phone", "name": "Phone"}]}),
+                ),
+            )
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Play(format!("spotify:track:{PLAYLIST}"))).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Devices(d), Update::Message(_, true)] if d[0].name == "Phone"
+        ));
+        // With nowhere to send playback, just say so.
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path("/me/player/play"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        wiremock::Mock::given(path("/me/player/devices"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"devices": []})),
+            )
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Play(format!("spotify:track:{PLAYLIST}"))).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Message(m, true)] if m.starts_with("No devices found")
+        ));
+    }
+    #[tokio::test]
+    async fn album_and_artist_searches_open_a_picker() {
+        use wiremock::matchers::{path, query_param};
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path("/search"))
+            .and(query_param("type", "album"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "albums": {"items": [{"name": "Mezzanine", "uri": "spotify:album:m",
+                    "images": [], "artists": [{"name": "Massive Attack", "uri": "spotify:artist:a"}]}],
+                    "next": null}
+            })))
+            .mount(&s)
+            .await;
+        wiremock::Mock::given(path("/search"))
+            .and(query_param("type", "artist"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"artists": {"items": [], "next": null}})),
+            )
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Search("mezz".into(), SearchKind::Albums)).await;
+        let [Update::Results(_, choices)] = updates.as_slice() else {
+            panic!("expected album results");
+        };
+        assert_eq!(choices[0].0, "Mezzanine — Massive Attack");
+        assert!(matches!(&choices[0].1, Command::Album(a) if a.uri == "spotify:album:m"));
+        let updates = run(&s, Command::Search("nobody".into(), SearchKind::Artists)).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Message(m, true)] if m == "No artists found for nobody"
+        ));
+    }
+    #[tokio::test]
+    async fn liked_songs_load_or_ask_for_a_new_login() {
+        use wiremock::matchers::path;
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path("/me/tracks"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "items": [{"added_at": "2026-01-01T00:00:00Z", "track": {"name": "Teardrop",
+                        "uri": "spotify:track:t"}}],
+                    "next": null
+                })),
+            )
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Liked).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Tracks(t, title, None, None)] if t[0].name == "Teardrop" && title == "Liked Songs (1)"
+        ));
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(path("/me/tracks"))
+            .respond_with(wiremock::ResponseTemplate::new(403))
+            .mount(&s)
+            .await;
+        let updates = run(&s, Command::Liked).await;
+        assert!(matches!(
+            updates.as_slice(),
+            [Update::Message(m, true)] if m.contains("spot login")
+        ));
+    }
+    #[test]
+    fn local_files_are_skipped_rather_than_sent_to_spotify() {
+        let mut ui = Ui::new(Config::default());
+        let (tx, mut rx) = mpsc::channel(1);
+        let local = Track {
+            uri: "spotify:local:a:b:c:1".into(),
+            name: "Demo".into(),
+            is_local: true,
+            ..Default::default()
+        };
+        let normal = Track {
+            uri: "spotify:track:1".into(),
+            ..Default::default()
+        };
+        ui.update(Update::Tracks(
+            vec![local, normal],
+            "Mix".into(),
+            None,
+            None,
+        ));
+        for key in ['\n', 'e', 'l', 'a'] {
+            let code = if key == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(key)
+            };
+            ui.key(KeyEvent::new(code, KeyModifiers::NONE), &tx);
+            assert!(rx.try_recv().is_err(), "{key:?} sent a local file");
+            assert!(ui.error && ui.message.contains("local file"));
+            assert!(ui.popup.is_none());
+        }
+        ui.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), &tx);
+        ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Command::PlayFrom { uris, .. } if uris == ["spotify:track:1"]
+        ));
+    }
+    #[test]
+    fn only_editable_playlists_are_offered_for_adding() {
+        let mut ui = Ui::new(Config::default());
+        let playlist = |name: &str, owner: &str, collaborative| Playlist {
+            id: name.into(),
+            name: name.into(),
+            owner: crate::api::Owner { id: owner.into() },
+            collaborative,
+            ..Default::default()
+        };
+        ui.playlists = vec![
+            playlist("Mine", "me", false),
+            playlist("Theirs", "them", false),
+            playlist("Shared", "them", true),
+        ];
+        ui.open(Popup::Add("spotify:track:1".into()));
+        // Before the user is known, nothing is hidden.
+        assert_eq!(ui.choices().len(), 3);
+        ui.update(Update::User("me".into()));
+        let names: Vec<_> = ui.choices().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Mine", "Shared"]);
+    }
+    #[test]
+    fn tab_cycles_what_search_looks_for() {
+        let mut ui = Ui::new(Config::default());
+        let (tx, mut rx) = mpsc::channel(1);
+        let press = |ui: &mut Ui, code| ui.key(KeyEvent::new(code, KeyModifiers::NONE), &tx);
+        press(&mut ui, KeyCode::Char('/'));
+        press(&mut ui, KeyCode::Tab);
+        assert!(matches!(ui.popup, Some(Popup::Search(SearchKind::Albums))));
+        press(&mut ui, KeyCode::Char('x'));
+        press(&mut ui, KeyCode::Enter);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Command::Search(q, SearchKind::Albums) if q == "x"
+        ));
+        // Picking a result runs its command.
+        ui.update(Update::Results(
+            "Artists".into(),
+            vec![("Band".into(), Command::Artist(Artist::default()))],
+        ));
+        press(&mut ui, KeyCode::Enter);
+        assert!(matches!(rx.try_recv().unwrap(), Command::Artist(_)));
+        assert!(ui.popup.is_none());
     }
     #[test]
     fn every_binding_has_one_help_section() {

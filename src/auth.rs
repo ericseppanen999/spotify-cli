@@ -26,6 +26,7 @@ const SCOPES: &[&str] = &[
     "playlist-modify-public",
     "playlist-modify-private",
     "user-library-modify",
+    "user-library-read",
     // Required by the Web Playback SDK (see webplayer.rs).
     "streaming",
     "user-read-email",
